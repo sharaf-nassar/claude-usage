@@ -1,0 +1,32 @@
+{
+  "productName": "Claude Usage",
+  "version": "0.1.0",
+  "identifier": "com.claude.usage-widget",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:8181",
+    "frontendDist": "../dist"
+  },
+  "bundle": {
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Claude Usage",
+        "width": 280,
+        "height": 340,
+        "minWidth": 180,
+        "minHeight": 100,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "decorations": false,
+        "resizable": true
+      }
+    ]
+  }
+}
