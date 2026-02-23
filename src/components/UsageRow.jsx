@@ -58,14 +58,94 @@ function formatNumUnit(text) {
   });
 }
 
-function UsageRow({ label, utilization, resetsAt }) {
+function getTimeFraction(resetsAt, label) {
+  if (!resetsAt) return null;
+  try {
+    const resetDate = new Date(resetsAt);
+    const now = new Date();
+    const remainingMs = resetDate - now;
+
+    const isFiveHour =
+      label.toLowerCase().includes("5") && label.toLowerCase().includes("hour");
+    const periodMs = isFiveHour ? 5 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+
+    const elapsedMs = periodMs - remainingMs;
+    return Math.max(0, Math.min(elapsedMs / periodMs, 1));
+  } catch {
+    return null;
+  }
+}
+
+function MarkerBar({ fraction, cls, timeFraction }) {
+  return (
+    <div className="progress-track marker-track">
+      <div
+        className={`progress-fill ${cls}`}
+        style={{ width: `${fraction * 100}%` }}
+      />
+      {timeFraction !== null && (
+        <div
+          className="time-marker"
+          style={{ left: `${timeFraction * 100}%` }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DualBar({ fraction, cls, timeFraction }) {
+  return (
+    <div className="bars">
+      <div className="progress-track">
+        <div
+          className={`progress-fill ${cls}`}
+          style={{ width: `${fraction * 100}%` }}
+        />
+      </div>
+      {timeFraction !== null && (
+        <div className="dual-row">
+          <span className="dual-label">time</span>
+          <div className="time-track">
+            <div
+              className="time-fill"
+              style={{ width: `${timeFraction * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BackgroundBar({ fraction, cls, timeFraction }) {
+  return (
+    <>
+      {timeFraction !== null && (
+        <div
+          className="bg-time-fill"
+          style={{ width: `${timeFraction * 100}%` }}
+        />
+      )}
+      <div className="progress-track">
+        <div
+          className={`progress-fill ${cls}`}
+          style={{ width: `${fraction * 100}%` }}
+        />
+      </div>
+    </>
+  );
+}
+
+function UsageRow({ label, utilization, resetsAt, timeMode }) {
   const fraction = Math.min(utilization / 100, 1);
   const cls = colorClass(utilization);
   const pctColor = gradientColor(utilization);
   const countdown = formatCountdown(resetsAt);
+  const timeFraction = getTimeFraction(resetsAt, label);
+  const isBackground = timeMode === "background";
 
   return (
-    <div className="row-box">
+    <div className={`row-box${isBackground ? " row-box-bg" : ""}`}>
       <div className="row-top">
         <span className="row-label">{formatNumUnit(label)}</span>
         <span className="row-percent" style={{ color: pctColor }}>
@@ -73,12 +153,15 @@ function UsageRow({ label, utilization, resetsAt }) {
         </span>
         <span className="row-countdown">{countdown}</span>
       </div>
-      <div className="progress-track">
-        <div
-          className={`progress-fill ${cls}`}
-          style={{ width: `${fraction * 100}%` }}
-        />
-      </div>
+      {timeMode === "marker" && (
+        <MarkerBar fraction={fraction} cls={cls} timeFraction={timeFraction} />
+      )}
+      {timeMode === "dual" && (
+        <DualBar fraction={fraction} cls={cls} timeFraction={timeFraction} />
+      )}
+      {timeMode === "background" && (
+        <BackgroundBar fraction={fraction} cls={cls} timeFraction={timeFraction} />
+      )}
     </div>
   );
 }

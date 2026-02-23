@@ -1,9 +1,18 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const OAUTH_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+// Public OAuth client ID for the native desktop flow (not a secret).
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(reqwest::Client::new)
+}
 
 fn credentials_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join(".credentials.json"))
@@ -42,8 +51,7 @@ pub async fn refresh_access_token() -> Result<String, String> {
         .ok_or("No refresh token found")?
         .to_string();
 
-    let client = reqwest::Client::new();
-    let resp = client
+    let resp = http_client()
         .post(OAUTH_TOKEN_URL)
         .json(&serde_json::json!({
             "grant_type": "refresh_token",
@@ -84,8 +92,26 @@ pub async fn refresh_access_token() -> Result<String, String> {
 
     let updated = serde_json::to_string_pretty(&data)
         .map_err(|e| format!("Failed to serialize credentials: {e}"))?;
-    fs::write(&path, updated)
-        .map_err(|e| format!("Failed to write credentials: {e}"))?;
+
+    // Atomic write: write to temp file, set permissions, then rename
+    let tmp_path = path.with_extension("json.tmp");
+    let mut tmp = fs::File::create(&tmp_path)
+        .map_err(|e| format!("Failed to create temp file: {e}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = tmp.set_permissions(fs::Permissions::from_mode(0o600));
+    }
+
+    tmp.write_all(updated.as_bytes())
+        .map_err(|e| format!("Failed to write temp file: {e}"))?;
+    tmp.flush()
+        .map_err(|e| format!("Failed to flush temp file: {e}"))?;
+    drop(tmp);
+
+    fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("Failed to rename credentials file: {e}"))?;
 
     Ok(new_access)
 }

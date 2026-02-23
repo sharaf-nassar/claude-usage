@@ -1,16 +1,32 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
-
-function TitleBar() {
-  const handleClose = async () => {
-    await getCurrentWindow().close();
-  };
-
+function TitleBar({
+  showLive,
+  showAnalytics,
+  onToggleLive,
+  onToggleAnalytics,
+  onClose,
+}) {
   return (
     <div className="titlebar" data-tauri-drag-region>
+      <div className="titlebar-left">
+        <div className="view-toggle">
+          <button
+            className={`view-tab${showLive ? " active" : ""}`}
+            onClick={() => onToggleLive(!showLive)}
+          >
+            Live
+          </button>
+          <button
+            className={`view-tab${showAnalytics ? " active" : ""}`}
+            onClick={() => onToggleAnalytics(!showAnalytics)}
+          >
+            Analytics
+          </button>
+        </div>
+      </div>
       <span className="titlebar-text" data-tauri-drag-region>
-        CLAUDE USAGE
+        CLAUDE CODE USAGE
       </span>
-      <button className="titlebar-close" onClick={handleClose}>
+      <button className="titlebar-close" onClick={onClose}>
         &times;
       </button>
     </div>

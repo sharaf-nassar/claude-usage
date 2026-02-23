@@ -1,11 +1,12 @@
 use crate::config::{read_access_token, refresh_access_token};
 use crate::models::{UsageBucket, UsageData};
+use std::sync::OnceLock;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
 const BUCKET_KEYS: &[(&str, &str)] = &[
-    ("five_hour", "per 5 hours"),
-    ("seven_day", "per 7 days"),
+    ("five_hour", "5 hours"),
+    ("seven_day", "7 days"),
     ("seven_day_sonnet", "Sonnet"),
     ("seven_day_opus", "Opus"),
     ("seven_day_cowork", "Code"),
@@ -13,9 +14,14 @@ const BUCKET_KEYS: &[(&str, &str)] = &[
     ("extra_usage", "Extra"),
 ];
 
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn do_fetch(token: &str) -> Result<reqwest::Response, reqwest::Error> {
-    let client = reqwest::Client::new();
-    client
+    http_client()
         .get(USAGE_URL)
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
@@ -23,6 +29,22 @@ async fn do_fetch(token: &str) -> Result<reqwest::Response, reqwest::Error> {
         .header("anthropic-beta", "oauth-2025-04-20")
         .send()
         .await
+}
+
+fn validate_utilization(val: f64) -> Option<f64> {
+    if val.is_finite() && val >= 0.0 {
+        Some(val)
+    } else {
+        None
+    }
+}
+
+fn validate_resets_at(val: &str) -> Option<String> {
+    if chrono::DateTime::parse_from_rfc3339(val).is_ok() {
+        Some(val.to_string())
+    } else {
+        None
+    }
 }
 
 fn parse_buckets(data: &serde_json::Value) -> Vec<UsageBucket> {
@@ -37,7 +59,7 @@ fn parse_buckets(data: &serde_json::Value) -> Vec<UsageBucket> {
             if entry.get("is_enabled").and_then(|v| v.as_bool()) != Some(true) {
                 continue;
             }
-            if let Some(util) = entry.get("utilization").and_then(|v| v.as_f64()) {
+            if let Some(util) = entry.get("utilization").and_then(|v| v.as_f64()).and_then(validate_utilization) {
                 buckets.push(UsageBucket {
                     label: label.into(),
                     utilization: util,
@@ -47,14 +69,18 @@ fn parse_buckets(data: &serde_json::Value) -> Vec<UsageBucket> {
             continue;
         }
 
-        let Some(util) = entry.get("utilization").and_then(|v| v.as_f64()) else {
+        let Some(util) = entry.get("utilization").and_then(|v| v.as_f64()).and_then(validate_utilization) else {
             continue;
         };
+
+        let resets_at = entry.get("resets_at")
+            .and_then(|v| v.as_str())
+            .and_then(validate_resets_at);
 
         buckets.push(UsageBucket {
             label: label.into(),
             utilization: util,
-            resets_at: entry.get("resets_at").and_then(|v| v.as_str()).map(String::from),
+            resets_at,
         });
     }
 

@@ -1,5 +1,5 @@
 {
-  "productName": "Claude Usage",
+  "productName": "Claude Plan Usage",
   "version": "0.1.0",
   "identifier": "com.claude.usage-widget",
   "build": {
@@ -17,7 +17,7 @@
   "app": {
     "windows": [
       {
-        "title": "Claude Usage",
+        "title": "Claude Plan Usage",
         "width": 280,
         "height": 340,
         "minWidth": 180,
