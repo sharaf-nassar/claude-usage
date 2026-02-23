@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
 
-use crate::models::{BucketStats, DataPoint, UsageBucket};
+use crate::models::{BucketStats, DataPoint, TokenDataPoint, TokenReportPayload, TokenStats, UsageBucket};
 
 fn db_path() -> Result<PathBuf, String> {
     let data_dir = dirs::data_local_dir()
@@ -66,7 +66,34 @@ impl Storage {
                 UNIQUE(hour, bucket_label)
             );
             CREATE INDEX IF NOT EXISTS idx_hourly_hour ON usage_hourly(hour);
-            CREATE INDEX IF NOT EXISTS idx_hourly_bucket ON usage_hourly(bucket_label);",
+            CREATE INDEX IF NOT EXISTS idx_hourly_bucket ON usage_hourly(bucket_label);
+
+            CREATE TABLE IF NOT EXISTS token_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                hostname TEXT NOT NULL DEFAULT 'local',
+                timestamp TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_token_snap_ts ON token_snapshots(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_token_snap_host ON token_snapshots(hostname);
+
+            CREATE TABLE IF NOT EXISTS token_hourly (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hour TEXT NOT NULL,
+                hostname TEXT NOT NULL DEFAULT 'local',
+                total_input INTEGER NOT NULL,
+                total_output INTEGER NOT NULL,
+                total_cache_creation INTEGER NOT NULL DEFAULT 0,
+                total_cache_read INTEGER NOT NULL DEFAULT 0,
+                turn_count INTEGER NOT NULL,
+                UNIQUE(hour, hostname)
+            );
+            CREATE INDEX IF NOT EXISTS idx_token_hourly_hour ON token_hourly(hour);",
         )
         .map_err(|e| format!("Failed to create tables: {e}"))?;
 
@@ -76,6 +103,10 @@ impl Storage {
 
         if let Err(e) = storage.aggregate_and_cleanup() {
             eprintln!("Warning: cleanup on startup failed: {e}");
+        }
+
+        if let Err(e) = storage.aggregate_and_cleanup_tokens() {
+            eprintln!("Warning: token cleanup on startup failed: {e}");
         }
 
         Ok(storage)
@@ -311,6 +342,262 @@ impl Storage {
         conn.query_row("SELECT COUNT(*) FROM usage_snapshots", [], |row| row.get(0))
             .map_err(|e| format!("Count error: {e}"))
     }
+
+    pub fn store_token_snapshot(&self, payload: &TokenReportPayload) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO token_snapshots (session_id, hostname, timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                payload.session_id,
+                payload.hostname,
+                now,
+                payload.input_tokens,
+                payload.output_tokens,
+                payload.cache_creation_input_tokens,
+                payload.cache_read_input_tokens
+            ],
+        )
+        .map_err(|e| format!("Insert token snapshot error: {e}"))?;
+
+        Ok(())
+    }
+
+    pub fn get_token_history(
+        &self,
+        range: &str,
+        hostname: Option<&str>,
+    ) -> Result<Vec<TokenDataPoint>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let now = Utc::now();
+
+        let (from, use_hourly) = match range {
+            "1h" => (now - Duration::hours(1), false),
+            "24h" => (now - Duration::hours(24), false),
+            "7d" => (now - Duration::days(7), false),
+            "30d" => (now - Duration::days(30), true),
+            "all" => (now - Duration::days(365), true),
+            _ => (now - Duration::hours(24), false),
+        };
+
+        let from_str = from.to_rfc3339();
+        let mut points = Vec::new();
+
+        if use_hourly {
+            let from_hour = from.format("%Y-%m-%dT%H:00:00Z").to_string();
+
+            let (hourly_sql, hourly_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+                if let Some(host) = hostname {
+                    (
+                        "SELECT hour, total_input, total_output, total_cache_creation, total_cache_read
+                         FROM token_hourly
+                         WHERE hour >= ?1 AND hostname = ?2
+                         ORDER BY hour ASC".to_string(),
+                        vec![Box::new(from_hour.clone()), Box::new(host.to_string())],
+                    )
+                } else {
+                    (
+                        "SELECT hour, SUM(total_input), SUM(total_output), SUM(total_cache_creation), SUM(total_cache_read)
+                         FROM token_hourly
+                         WHERE hour >= ?1
+                         GROUP BY hour
+                         ORDER BY hour ASC".to_string(),
+                        vec![Box::new(from_hour.clone())],
+                    )
+                };
+
+            let mut stmt = conn.prepare_cached(&hourly_sql)
+                .map_err(|e| format!("Prepare error: {e}"))?;
+
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                hourly_params.iter().map(|p| p.as_ref()).collect();
+
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                let inp: i64 = row.get(1)?;
+                let out: i64 = row.get(2)?;
+                let cc: i64 = row.get(3)?;
+                let cr: i64 = row.get(4)?;
+                Ok(TokenDataPoint {
+                    timestamp: row.get(0)?,
+                    input_tokens: inp,
+                    output_tokens: out,
+                    cache_creation_input_tokens: cc,
+                    cache_read_input_tokens: cr,
+                    total_tokens: inp + out + cc + cr,
+                })
+            }).map_err(|e| format!("Query error: {e}"))?;
+
+            for row in rows {
+                points.push(row.map_err(|e| format!("Row error: {e}"))?);
+            }
+        }
+
+        // Append granular snapshots
+        let (snap_sql, snap_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(host) = hostname {
+                (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND hostname = ?2
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone()), Box::new(host.to_string())],
+                )
+            } else {
+                (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone())],
+                )
+            };
+
+        let mut stmt2 = conn.prepare_cached(&snap_sql)
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let params_refs2: Vec<&dyn rusqlite::types::ToSql> =
+            snap_params.iter().map(|p| p.as_ref()).collect();
+
+        let snap_rows = stmt2.query_map(params_refs2.as_slice(), |row| {
+            let inp: i64 = row.get(1)?;
+            let out: i64 = row.get(2)?;
+            let cc: i64 = row.get(3)?;
+            let cr: i64 = row.get(4)?;
+            Ok(TokenDataPoint {
+                timestamp: row.get(0)?,
+                input_tokens: inp,
+                output_tokens: out,
+                cache_creation_input_tokens: cc,
+                cache_read_input_tokens: cr,
+                total_tokens: inp + out + cc + cr,
+            })
+        }).map_err(|e| format!("Query error: {e}"))?;
+
+        for row in snap_rows {
+            points.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+
+        let max_points = match range {
+            "1h" => 60,
+            "7d" => 672,
+            "30d" | "all" => 720,
+            _ => 1440,
+        };
+
+        Ok(downsample_tokens(points, max_points))
+    }
+
+    pub fn get_token_stats(
+        &self,
+        days: i32,
+        hostname: Option<&str>,
+    ) -> Result<TokenStats, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(host) = hostname {
+                (
+                    "SELECT
+                         COALESCE(SUM(input_tokens), 0),
+                         COALESCE(SUM(output_tokens), 0),
+                         COALESCE(SUM(cache_creation_input_tokens), 0),
+                         COALESCE(SUM(cache_read_input_tokens), 0),
+                         COUNT(*)
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND hostname = ?2".to_string(),
+                    vec![Box::new(from), Box::new(host.to_string())],
+                )
+            } else {
+                (
+                    "SELECT
+                         COALESCE(SUM(input_tokens), 0),
+                         COALESCE(SUM(output_tokens), 0),
+                         COALESCE(SUM(cache_creation_input_tokens), 0),
+                         COALESCE(SUM(cache_read_input_tokens), 0),
+                         COUNT(*)
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1".to_string(),
+                    vec![Box::new(from)],
+                )
+            };
+
+        let mut stmt = conn.prepare_cached(&sql)
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        stmt.query_row(params_refs.as_slice(), |row| {
+            let total_input: i64 = row.get(0)?;
+            let total_output: i64 = row.get(1)?;
+            let total_cache_creation: i64 = row.get(2)?;
+            let total_cache_read: i64 = row.get(3)?;
+            let turn_count: i64 = row.get(4)?;
+            let total_tokens = total_input + total_output + total_cache_creation + total_cache_read;
+
+            Ok(TokenStats {
+                total_input,
+                total_output,
+                total_cache_creation,
+                total_cache_read,
+                total_tokens,
+                turn_count,
+                avg_input_per_turn: if turn_count > 0 { total_input as f64 / turn_count as f64 } else { 0.0 },
+                avg_output_per_turn: if turn_count > 0 { total_output as f64 / turn_count as f64 } else { 0.0 },
+            })
+        })
+        .map_err(|e| format!("Query error: {e}"))
+    }
+
+    pub fn get_token_hostnames(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let mut stmt = conn
+            .prepare_cached("SELECT DISTINCT hostname FROM token_snapshots ORDER BY hostname ASC")
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut hostnames = Vec::new();
+        for row in rows {
+            hostnames.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(hostnames)
+    }
+
+    pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let cutoff = (Utc::now() - Duration::days(30)).to_rfc3339();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO token_hourly (hour, hostname, total_input, total_output, total_cache_creation, total_cache_read, turn_count)
+             SELECT
+                 strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hour,
+                 hostname,
+                 SUM(input_tokens),
+                 SUM(output_tokens),
+                 SUM(cache_creation_input_tokens),
+                 SUM(cache_read_input_tokens),
+                 COUNT(*)
+             FROM token_snapshots
+             WHERE timestamp < ?1
+             GROUP BY hour, hostname",
+            params![cutoff],
+        )
+        .map_err(|e| format!("Token aggregation insert error: {e}"))?;
+
+        conn.execute(
+            "DELETE FROM token_snapshots WHERE timestamp < ?1",
+            params![cutoff],
+        )
+        .map_err(|e| format!("Token aggregation delete error: {e}"))?;
+
+        Ok(())
+    }
 }
 
 fn calc_trend(conn: &Connection, bucket: &str) -> Result<String, String> {
@@ -342,6 +629,32 @@ fn calc_trend(conn: &Connection, bucket: &str) -> Result<String, String> {
         (Some(_), Some(_)) => Ok("flat".into()),
         _ => Ok("unknown".into()),
     }
+}
+
+fn downsample_tokens(points: Vec<TokenDataPoint>, max: usize) -> Vec<TokenDataPoint> {
+    if points.len() <= max {
+        return points;
+    }
+
+    let chunk_size = points.len() / max;
+    points
+        .chunks(chunk_size)
+        .take(max)
+        .map(|chunk| {
+            let inp: i64 = chunk.iter().map(|p| p.input_tokens).sum();
+            let out: i64 = chunk.iter().map(|p| p.output_tokens).sum();
+            let cc: i64 = chunk.iter().map(|p| p.cache_creation_input_tokens).sum();
+            let cr: i64 = chunk.iter().map(|p| p.cache_read_input_tokens).sum();
+            TokenDataPoint {
+                timestamp: chunk[chunk.len() / 2].timestamp.clone(),
+                input_tokens: inp,
+                output_tokens: out,
+                cache_creation_input_tokens: cc,
+                cache_read_input_tokens: cr,
+                total_tokens: inp + out + cc + cr,
+            }
+        })
+        .collect()
 }
 
 fn downsample(points: Vec<DataPoint>, max: usize) -> Vec<DataPoint> {

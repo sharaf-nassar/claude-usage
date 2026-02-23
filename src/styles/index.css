@@ -348,6 +348,27 @@ body {
   transition: width 0.3s ease;
 }
 
+/* ─── Token sparkline (inline in live view) ─── */
+.token-sparkline-row {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--s));
+  margin-top: calc(4px * var(--s));
+}
+
+.token-sparkline-label {
+  font-size: calc(8px * var(--s));
+  color: rgba(96, 165, 250, 0.6);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.token-sparkline-chart {
+  flex: 1;
+  height: 16px;
+  min-width: 0;
+}
+
 /* Error / loading */
 .error-label {
   color: #ef4444;

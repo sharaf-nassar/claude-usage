@@ -18,6 +18,7 @@ export function useAnalyticsData(bucket, range, currentBuckets) {
 
   const bucketsRef = useRef(currentBuckets);
   bucketsRef.current = currentBuckets;
+  const hasBuckets = !!(currentBuckets && currentBuckets.length > 0);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -41,7 +42,7 @@ export function useAnalyticsData(bucket, range, currentBuckets) {
             label: b.label,
             utilization: b.utilization,
             resets_at: b.resets_at ?? null,
-          }))
+          })),
         );
 
         const [statsData, allStatsData] = await Promise.all([
@@ -63,11 +64,19 @@ export function useAnalyticsData(bucket, range, currentBuckets) {
     } finally {
       setLoading(false);
     }
-  }, [bucket, range]);
+  }, [bucket, range, hasBuckets]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  return { history, stats, allStats, snapshotCount, loading, error, refresh: fetchData };
+  return {
+    history,
+    stats,
+    allStats,
+    snapshotCount,
+    loading,
+    error,
+    refresh: fetchData,
+  };
 }

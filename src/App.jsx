@@ -102,7 +102,7 @@ function App() {
 
   const handleClose = useCallback(async () => {
     await saveCurrentSize();
-    await getCurrentWindow().close();
+    await invoke("hide_window");
   }, [saveCurrentSize]);
 
   const restoreSize = useCallback(async (key) => {
@@ -197,11 +197,15 @@ function App() {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  // Save size on window close via Tauri's async-safe event
+  // Intercept OS-level close (Alt+F4, etc.) to hide instead of quit
   useEffect(() => {
-    const unlistenPromise = getCurrentWindow().onCloseRequested(async () => {
-      await saveCurrentSize();
-    });
+    const unlistenPromise = getCurrentWindow().onCloseRequested(
+      async (event) => {
+        event.preventDefault();
+        await saveCurrentSize();
+        await invoke("hide_window");
+      },
+    );
     return () => {
       unlistenPromise.then((fn) => fn());
     };
@@ -258,7 +262,7 @@ function App() {
   const handleQuit = async () => {
     closeMenu();
     await saveCurrentSize();
-    await getCurrentWindow().close();
+    await invoke("quit_app");
   };
 
   const handleRefresh = () => {

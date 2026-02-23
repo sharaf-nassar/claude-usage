@@ -1,0 +1,15 @@
+{
+  "name": "claude-usage",
+  "owner": {
+    "name": "sharaf-nassar"
+  },
+  "description": "Claude Usage widget plugins",
+  "plugins": [
+    {
+      "name": "claude-usage-hook",
+      "description": "Reports per-turn token usage to the Claude Usage desktop widget. After installing, run /claude-usage-hook:setup to configure.",
+      "version": "1.0.0",
+      "source": "./plugin"
+    }
+  ]
+}

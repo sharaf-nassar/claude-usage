@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useAnalyticsData } from "../../hooks/useAnalyticsData";
+import { useTokenData } from "../../hooks/useTokenData";
 import UsageChart from "./UsageChart";
 import StatsPanel from "./StatsPanel";
 import BucketOverview from "./BucketOverview";
@@ -64,6 +65,8 @@ function AnalyticsView({ currentBuckets }) {
   const { history, stats, allStats, snapshotCount, loading, error } =
     useAnalyticsData(selectedBucket, range, stableBuckets);
 
+  const { history: tokenHistory } = useTokenData(range, null);
+
   if (snapshotCount === 0 && !loading) {
     return (
       <div className="analytics-view">
@@ -113,7 +116,12 @@ function AnalyticsView({ currentBuckets }) {
         <>
           <div className="chart-section">
             <div className="section-title">{selectedBucket} Usage</div>
-            <UsageChart data={history} range={range} bucket={selectedBucket} />
+            <UsageChart
+              data={history}
+              range={range}
+              bucket={selectedBucket}
+              tokenData={tokenHistory}
+            />
           </div>
 
           <StatsPanel stats={stats} />

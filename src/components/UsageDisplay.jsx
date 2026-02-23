@@ -83,13 +83,14 @@ function UsageDisplay({ data, timeMode, onTimeModeChange }) {
         </span>
         <span className="col-resets">Resets In</span>
       </div>
-      {data.buckets.map((bucket) => (
+      {data.buckets.map((bucket, i) => (
         <UsageRow
           key={bucket.label}
           label={bucket.label}
           utilization={bucket.utilization}
           resetsAt={bucket.resets_at}
           timeMode={timeMode}
+          showTokenSparkline={i === 0}
         />
       ))}
     </div>

@@ -1,5 +1,40 @@
 use serde::{Deserialize, Serialize};
 
+// Payload received from hook scripts via HTTP API
+#[derive(Deserialize, Clone, Debug)]
+pub struct TokenReportPayload {
+    pub session_id: String,
+    pub hostname: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub cache_read_input_tokens: i64,
+}
+
+// Time-series point for token charts
+#[derive(Serialize, Clone, Debug)]
+pub struct TokenDataPoint {
+    pub timestamp: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub cache_read_input_tokens: i64,
+    pub total_tokens: i64,
+}
+
+// Aggregate stats for token stats panel
+#[derive(Serialize, Clone, Debug)]
+pub struct TokenStats {
+    pub total_input: i64,
+    pub total_output: i64,
+    pub total_cache_creation: i64,
+    pub total_cache_read: i64,
+    pub total_tokens: i64,
+    pub turn_count: i64,
+    pub avg_input_per_turn: f64,
+    pub avg_output_per_turn: f64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UsageBucket {
     pub label: String,
