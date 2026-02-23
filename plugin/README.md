@@ -1,6 +1,6 @@
 # claude-usage-hook
 
-Claude Code plugin that reports per-turn token usage (input, output, cache creation, cache read) to the [Claude Plan Usage](https://github.com/sharaf-nassar/claude-usage) desktop widget.
+Claude Code plugin that reports per-turn token usage (input, output, cache creation, cache read) to the [Claude Usage](https://github.com/sharaf-nassar/claude-usage) desktop widget.
 
 ## Install
 
@@ -30,7 +30,7 @@ When the widget runs on a different machine, the setup skill will prompt for the
 ## Requirements
 
 - `python3` and `curl` available on PATH
-- The Claude Plan Usage widget running (provides the HTTP server on port 19876)
+- The Claude Usage widget running (provides the HTTP server on port 19876)
 
 ## How it works
 

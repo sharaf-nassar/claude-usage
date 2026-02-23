@@ -20,19 +20,25 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 0
 fi
 
-# Read URL and hostname from config file
+# Read URL, hostname, and secret from config file
 USAGE_URL=$(python3 -c "
-import json
-with open('$CONFIG_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     c = json.load(f)
 print(c.get('url', ''))
-" 2>/dev/null || true)
+" "$CONFIG_FILE" 2>/dev/null || true)
 HOSTNAME_ID=$(python3 -c "
-import json
-with open('$CONFIG_FILE') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     c = json.load(f)
 print(c.get('hostname', ''))
-" 2>/dev/null || true)
+" "$CONFIG_FILE" 2>/dev/null || true)
+SECRET=$(python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    c = json.load(f)
+print(c.get('secret', ''))
+" "$CONFIG_FILE" 2>/dev/null || true)
 
 # If config exists but URL is empty/missing, skip
 if [ -z "$USAGE_URL" ]; then
@@ -127,9 +133,19 @@ if [ -z "$PAYLOAD" ]; then
 fi
 
 # POST to the widget server (fire-and-forget, 2s timeout)
-curl -s -m 2 \
-    -X POST \
-    -H 'Content-Type: application/json' \
-    -d "$PAYLOAD" \
-    "${USAGE_URL}/api/v1/tokens" \
-    >/dev/null 2>&1 || true
+if [ -n "$SECRET" ]; then
+    curl -s -m 2 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $SECRET" \
+        -d "$PAYLOAD" \
+        "${USAGE_URL}/api/v1/tokens" \
+        >/dev/null 2>&1 || true
+else
+    curl -s -m 2 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD" \
+        "${USAGE_URL}/api/v1/tokens" \
+        >/dev/null 2>&1 || true
+fi

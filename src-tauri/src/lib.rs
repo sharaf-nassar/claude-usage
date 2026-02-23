@@ -1,3 +1,4 @@
+mod auth;
 mod config;
 mod fetcher;
 mod models;
@@ -5,6 +6,7 @@ mod server;
 mod storage;
 
 use models::{BucketStats, DataPoint, TokenDataPoint, TokenStats, UsageData};
+use rand::RngCore;
 use storage::Storage;
 use std::sync::{Mutex, OnceLock};
 use tauri::{Manager, PhysicalPosition};
@@ -123,12 +125,24 @@ pub fn run() {
         Err(e) => eprintln!("Warning: failed to initialize storage: {e}"),
     }
 
+    // Load or generate the auth secret for the HTTP server
+    let secret = match auth::load_or_create_secret() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Warning: failed to load auth secret, generating ephemeral: {e}");
+            let mut bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut bytes);
+            hex::encode(bytes)
+        }
+    };
+
     // Spawn the HTTP token reporting server
     if let Some(storage) = STORAGE.get() {
-        tauri::async_runtime::spawn(server::start_server(storage));
+        tauri::async_runtime::spawn(server::start_server(storage, secret));
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Show Widget", true, None::<&str>)?;
@@ -137,7 +151,7 @@ pub fn run() {
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Claude Plan Usage")
+                .tooltip("Claude Usage")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| {

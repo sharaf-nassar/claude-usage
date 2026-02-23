@@ -14,6 +14,7 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:tray:default",
-    "window-state:default"
+    "window-state:default",
+    "updater:default"
   ]
 }

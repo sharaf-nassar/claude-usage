@@ -1,4 +1,4 @@
-# Claude Plan Usage Widget
+# Claude Usage Widget
 
 A cross-platform desktop widget that displays your Claude AI plan usage in a compact, always-on-top floating window. Built with Tauri + React.
 

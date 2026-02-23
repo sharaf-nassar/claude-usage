@@ -1,5 +1,5 @@
 {
-  "productName": "Claude Plan Usage",
+  "productName": "Claude Usage",
   "version": "0.1.0",
   "identifier": "com.claude.usage-widget",
   "build": {
@@ -9,15 +9,26 @@
     "frontendDist": "../dist"
   },
   "bundle": {
+    "active": true,
+    "targets": ["dmg", "nsis", "deb", "rpm", "appimage"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
     ]
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQwQzVGMThBNEFBMzM5RTUKUldUbE9hTktpdkhGUUc5ZSt0VVY2QjZvQVJQbFN0akRHbXBTVGExdWtIMmhkQzE5ZjZYQTZyV1oK",
+      "endpoints": [
+        "https://github.com/sharaf-nassar/claude-usage/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "app": {
     "windows": [
       {
-        "title": "Claude Plan Usage",
+        "title": "Claude Usage",
         "width": 280,
         "height": 340,
         "minWidth": 180,

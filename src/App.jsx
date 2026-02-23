@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import TitleBar from "./components/TitleBar";
 import UsageDisplay from "./components/UsageDisplay";
 import AnalyticsView from "./components/analytics/AnalyticsView";
@@ -196,6 +198,18 @@ function App() {
     const interval = setInterval(refresh, 60_000);
     return () => clearInterval(interval);
   }, [refresh]);
+
+  // Check for app updates on startup
+  useEffect(() => {
+    check()
+      .then((update) => {
+        if (update) {
+          console.log(`Update available: ${update.version}`);
+          return update.downloadAndInstall().then(() => relaunch());
+        }
+      })
+      .catch((e) => console.log("Update check skipped:", e));
+  }, []);
 
   // Intercept OS-level close (Alt+F4, etc.) to hide instead of quit
   useEffect(() => {

@@ -24,7 +24,7 @@ function TitleBar({
         </div>
       </div>
       <span className="titlebar-text" data-tauri-drag-region>
-        CLAUDE CODE USAGE
+        CLAUDE USAGE
       </span>
       <button className="titlebar-close" onClick={onClose}>
         &times;
