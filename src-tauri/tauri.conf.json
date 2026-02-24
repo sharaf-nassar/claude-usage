@@ -1,6 +1,6 @@
 {
   "productName": "Claude Usage",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "identifier": "com.claude.usage-widget",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -10,7 +10,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "nsis", "deb", "rpm", "appimage"],
+    "targets": ["dmg", "nsis", "appimage"],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon.png",

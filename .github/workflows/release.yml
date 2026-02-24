@@ -68,6 +68,54 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Rename release assets with platform labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # Find the draft release (releases/tags endpoint excludes drafts, so list all)
+          RELEASE_ID=$(gh api "repos/${GH_REPO}/releases" -q ".[] | select(.tag_name == \"${TAG_NAME}\") | .id" | head -n1)
+          if [[ -z "$RELEASE_ID" ]]; then
+            echo "::error::Could not find release for tag ${TAG_NAME}"
+            exit 1
+          fi
+          echo "Found release ID: ${RELEASE_ID}"
+
+          # Rename assets: insert platform between version and arch
+          gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --jq '.[] | "\(.id)\t\(.name)"' | while IFS=$'\t' read -r id name; do
+            new_name="$name"
+
+            if [[ "$name" == *".AppImage"* ]]; then
+              new_name=$(echo "$name" | sed -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_/\1_linux_/')
+            elif [[ "$name" == *".app.tar.gz"* ]] || [[ "$name" == *".dmg"* ]]; then
+              new_name=$(echo "$name" | sed -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_/\1_macOS_/')
+            elif [[ "$name" == *".nsis"* ]] || [[ "$name" == *".msi"* ]]; then
+              new_name=$(echo "$name" | sed -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_/\1_windows_/')
+            fi
+
+            if [[ "$new_name" != "$name" ]]; then
+              echo "Renaming: $name -> $new_name"
+              gh api --method PATCH "repos/${GH_REPO}/releases/assets/${id}" -f name="$new_name"
+            fi
+          done
+
+          # Update latest.json URLs to match renamed filenames
+          LATEST_ID=$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --jq '.[] | select(.name == "latest.json") | .id')
+          if [[ -n "$LATEST_ID" ]]; then
+            gh api "repos/${GH_REPO}/releases/assets/${LATEST_ID}" \
+              -H "Accept: application/octet-stream" > latest.json
+
+            sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.AppImage)/\1_linux_\2/g' latest.json
+            sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.app\.tar\.gz)/\1_macOS_\2/g' latest.json
+            sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.dmg)/\1_macOS_\2/g' latest.json
+            sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.nsis)/\1_windows_\2/g' latest.json
+            sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.msi)/\1_windows_\2/g' latest.json
+
+            gh api --method DELETE "repos/${GH_REPO}/releases/assets/${LATEST_ID}"
+            gh release upload "${TAG_NAME}" latest.json --clobber
+          fi
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

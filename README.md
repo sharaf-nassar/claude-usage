@@ -37,8 +37,8 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 ### From releases
 
 Download the latest release for your platform from the [Releases](../../releases) page:
-- Linux: `.deb` or `.AppImage`
-- Windows: `.msi` or `.exe`
+- Linux: `.AppImage`
+- Windows: `.exe`
 - macOS: `.dmg`
 
 ### From source
@@ -176,6 +176,22 @@ hooks/                        # Standalone hook scripts (non-plugin)
   claude-usage-hook.sh        # Standalone Stop hook
   install.sh                  # curl-pipe installer
 ```
+
+## Releasing
+
+Releases are driven by git tags. The CI workflow (`.github/workflows/release.yml`) builds and publishes automatically.
+
+1. Create and push a version tag:
+   ```bash
+   git tag v0.3.0
+   git push origin v0.3.0
+   ```
+
+2. The `tauri-action` patches the version in `tauri.conf.json` at build time using the tag, so the built binary always matches the tag version. You do not need to update `tauri.conf.json`, `package.json`, or `Cargo.toml` manually — the git tag is the single source of truth for the release version.
+
+3. The workflow creates a draft GitHub release, builds for all platforms (Linux AppImage, macOS dmg, Windows nsis), then publishes the release.
+
+4. The in-app updater checks the `latest.json` endpoint on GitHub Releases on startup and every 4 hours. When an update is found, a yellow "Update" button appears in the titlebar. Linux uses AppImage so updates install without sudo.
 
 ## License
 
