@@ -77,6 +77,7 @@ impl Storage {
                 output_tokens INTEGER NOT NULL,
                 cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cwd TEXT DEFAULT NULL,
                 created_at TEXT DEFAULT (datetime('now'))
             );
             CREATE INDEX IF NOT EXISTS idx_token_snap_ts ON token_snapshots(timestamp);
@@ -96,6 +97,17 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_token_hourly_hour ON token_hourly(hour);",
         )
         .map_err(|e| format!("Failed to create tables: {e}"))?;
+
+        // Migration: add cwd column to token_snapshots if missing
+        let has_cwd: bool = conn
+            .prepare("SELECT cwd FROM token_snapshots LIMIT 0")
+            .is_ok();
+        if !has_cwd {
+            conn.execute_batch(
+                "ALTER TABLE token_snapshots ADD COLUMN cwd TEXT DEFAULT NULL;",
+            )
+            .map_err(|e| format!("Migration (add cwd column) error: {e}"))?;
+        }
 
         let storage = Self {
             conn: Mutex::new(conn),
@@ -348,8 +360,8 @@ impl Storage {
         let now = Utc::now().to_rfc3339();
 
         conn.execute(
-            "INSERT INTO token_snapshots (session_id, hostname, timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO token_snapshots (session_id, hostname, timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 payload.session_id,
                 payload.hostname,
@@ -357,7 +369,8 @@ impl Storage {
                 payload.input_tokens,
                 payload.output_tokens,
                 payload.cache_creation_input_tokens,
-                payload.cache_read_input_tokens
+                payload.cache_read_input_tokens,
+                payload.cwd
             ],
         )
         .map_err(|e| format!("Insert token snapshot error: {e}"))?;
@@ -629,15 +642,18 @@ impl Storage {
             if let Some(host) = hostname {
                 (
                     "SELECT
-                         session_id,
-                         hostname,
-                         SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens,
+                         s.session_id,
+                         s.hostname,
+                         SUM(s.input_tokens + s.output_tokens + s.cache_creation_input_tokens + s.cache_read_input_tokens) as total_tokens,
                          COUNT(*) as turn_count,
-                         MIN(timestamp) as first_seen,
-                         MAX(timestamp) as last_active
-                     FROM token_snapshots
-                     WHERE timestamp >= ?1 AND hostname = ?2
-                     GROUP BY session_id
+                         MIN(s.timestamp) as first_seen,
+                         MAX(s.timestamp) as last_active,
+                         (SELECT t.cwd FROM token_snapshots t
+                          WHERE t.session_id = s.session_id AND t.cwd IS NOT NULL
+                          ORDER BY t.timestamp DESC LIMIT 1) as project
+                     FROM token_snapshots s
+                     WHERE s.timestamp >= ?1 AND s.hostname = ?2
+                     GROUP BY s.session_id
                      ORDER BY last_active DESC
                      LIMIT 10".to_string(),
                     vec![Box::new(from), Box::new(host.to_string())],
@@ -645,15 +661,18 @@ impl Storage {
             } else {
                 (
                     "SELECT
-                         session_id,
-                         hostname,
-                         SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens,
+                         s.session_id,
+                         s.hostname,
+                         SUM(s.input_tokens + s.output_tokens + s.cache_creation_input_tokens + s.cache_read_input_tokens) as total_tokens,
                          COUNT(*) as turn_count,
-                         MIN(timestamp) as first_seen,
-                         MAX(timestamp) as last_active
-                     FROM token_snapshots
-                     WHERE timestamp >= ?1
-                     GROUP BY session_id
+                         MIN(s.timestamp) as first_seen,
+                         MAX(s.timestamp) as last_active,
+                         (SELECT t.cwd FROM token_snapshots t
+                          WHERE t.session_id = s.session_id AND t.cwd IS NOT NULL
+                          ORDER BY t.timestamp DESC LIMIT 1) as project
+                     FROM token_snapshots s
+                     WHERE s.timestamp >= ?1
+                     GROUP BY s.session_id
                      ORDER BY last_active DESC
                      LIMIT 10".to_string(),
                     vec![Box::new(from)],
@@ -675,6 +694,7 @@ impl Storage {
                     turn_count: row.get(3)?,
                     first_seen: row.get(4)?,
                     last_active: row.get(5)?,
+                    project: row.get(6)?,
                 })
             })
             .map_err(|e| format!("Query error: {e}"))?;

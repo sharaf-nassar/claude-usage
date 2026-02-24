@@ -90,7 +90,7 @@ jobs:
               new_name=$(echo "$name" | sed -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_/\1_linux_/')
             elif [[ "$name" == *".app.tar.gz"* ]] || [[ "$name" == *".dmg"* ]]; then
               new_name=$(echo "$name" | sed -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_/\1_macOS_/')
-            elif [[ "$name" == *".nsis"* ]] || [[ "$name" == *".msi"* ]]; then
+            elif [[ "$name" == *".exe"* ]] || [[ "$name" == *".nsis"* ]] || [[ "$name" == *".msi"* ]]; then
               new_name=$(echo "$name" | sed -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_/\1_windows_/')
             fi
 
@@ -109,6 +109,7 @@ jobs:
             sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.AppImage)/\1_linux_\2/g' latest.json
             sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.app\.tar\.gz)/\1_macOS_\2/g' latest.json
             sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.dmg)/\1_macOS_\2/g' latest.json
+            sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.exe)/\1_windows_\2/g' latest.json
             sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.nsis)/\1_windows_\2/g' latest.json
             sed -i -E 's/(_[0-9]+\.[0-9]+\.[0-9]+)_(.*\.msi)/\1_windows_\2/g' latest.json
 

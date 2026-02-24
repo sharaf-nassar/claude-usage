@@ -15,6 +15,12 @@ function formatRelativeTime(isoString) {
   return `${diffDays}d ago`;
 }
 
+function projectName(path) {
+  if (!path) return null;
+  const segments = path.split("/").filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1] : null;
+}
+
 const MODES = ["hosts", "sessions"];
 const MODE_LABELS = { hosts: "Hosts", sessions: "Sessions" };
 const PAGE_SIZE = 5;
@@ -148,7 +154,7 @@ function BreakdownPanel({ days, selection, onSelect }) {
                   className={`breakdown-row breakdown-row-session${isSelected("session", row.session_id) ? " selected" : ""}`}
                   role="listitem"
                   tabIndex={0}
-                  aria-label={`Session ${row.session_id.slice(0, 8)} on ${row.hostname}: ${formatTokenCount(row.total_tokens)} tokens, ${row.turn_count} turns`}
+                  aria-label={`Session ${row.session_id.slice(0, 8)}${projectName(row.project) ? ` in ${projectName(row.project)}` : ""} on ${row.hostname}: ${formatTokenCount(row.total_tokens)} tokens, ${row.turn_count} turns`}
                   onClick={() => handleRowClick("session", row.session_id, row)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
@@ -159,6 +165,14 @@ function BreakdownPanel({ days, selection, onSelect }) {
                 >
                   <span className="breakdown-name" title={row.session_id}>
                     {row.session_id.slice(0, 8)}
+                    {projectName(row.project) && (
+                      <span
+                        className="breakdown-project-tag"
+                        title={row.project}
+                      >
+                        {projectName(row.project)}
+                      </span>
+                    )}
                     <span className="breakdown-host-tag">{row.hostname}</span>
                   </span>
                   <span className="breakdown-tokens">
