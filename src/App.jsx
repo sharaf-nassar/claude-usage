@@ -200,17 +200,38 @@ function App() {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  // Check for app updates on startup
-  useEffect(() => {
+  // Check for app updates on startup and every 4 hours
+  const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [updating, setUpdating] = useState(false);
+
+  const checkForUpdate = useCallback(() => {
     check()
       .then((update) => {
         if (update) {
           console.log(`Update available: ${update.version}`);
-          return update.downloadAndInstall().then(() => relaunch());
+          setPendingUpdate(update);
         }
       })
       .catch((e) => console.log("Update check skipped:", e));
   }, []);
+
+  useEffect(() => {
+    checkForUpdate();
+    const interval = setInterval(checkForUpdate, 4 * 60 * 60_000);
+    return () => clearInterval(interval);
+  }, [checkForUpdate]);
+
+  const handleUpdate = useCallback(async () => {
+    if (!pendingUpdate || updating) return;
+    setUpdating(true);
+    try {
+      await pendingUpdate.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      console.error("Update failed:", e);
+      setUpdating(false);
+    }
+  }, [pendingUpdate, updating]);
 
   // Intercept OS-level close (Alt+F4, etc.) to hide instead of quit
   useEffect(() => {
@@ -293,6 +314,9 @@ function App() {
         onToggleLive={handleToggleLive}
         onToggleAnalytics={handleToggleAnalytics}
         onClose={handleClose}
+        pendingUpdate={pendingUpdate}
+        updating={updating}
+        onUpdate={handleUpdate}
       />
       <div className="panels">
         {showLive && (

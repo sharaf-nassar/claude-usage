@@ -7,6 +7,9 @@ function TitleBar({
   onToggleLive,
   onToggleAnalytics,
   onClose,
+  pendingUpdate,
+  updating,
+  onUpdate,
 }) {
   const [version, setVersion] = useState("");
 
@@ -34,9 +37,20 @@ function TitleBar({
           </button>
         </div>
       </div>
-      <span className="titlebar-text" data-tauri-drag-region>
-        CLAUDE USAGE
-      </span>
+      {pendingUpdate ? (
+        <button
+          className="titlebar-update-btn"
+          onClick={onUpdate}
+          disabled={updating}
+          aria-label={`Update to version ${pendingUpdate.version}`}
+        >
+          {updating ? "Updating..." : `Update ${pendingUpdate.version}`}
+        </button>
+      ) : (
+        <span className="titlebar-text" data-tauri-drag-region>
+          CLAUDE USAGE
+        </span>
+      )}
       {version && <span className="titlebar-version">v{version}</span>}
       <button
         className="titlebar-close"

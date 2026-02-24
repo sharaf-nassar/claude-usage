@@ -83,6 +83,33 @@ body {
   pointer-events: none;
 }
 
+.titlebar-update-btn {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(251, 191, 36, 0.15);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.titlebar-update-btn:hover {
+  background: rgba(251, 191, 36, 0.25);
+  border-color: rgba(251, 191, 36, 0.6);
+}
+
+.titlebar-update-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .titlebar-version {
   color: rgba(255, 255, 255, 0.25);
   font-size: 9px;
