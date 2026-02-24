@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+const REFRESH_DEBOUNCE_MS = 1000;
 
 export function useBreakdownData(mode, days) {
   const [data, setData] = useState([]);
@@ -45,6 +48,19 @@ export function useBreakdownData(mode, days) {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Auto-refresh when new token data arrives via Tauri event
+  useEffect(() => {
+    let timer = null;
+    const unlistenPromise = listen("tokens-updated", () => {
+      clearTimeout(timer);
+      timer = setTimeout(fetchData, REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      clearTimeout(timer);
+      unlistenPromise.then((fn) => fn());
+    };
   }, [fetchData]);
 
   // Return loading when mode and dataMode are out of sync

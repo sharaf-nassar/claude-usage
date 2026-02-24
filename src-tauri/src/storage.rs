@@ -94,7 +94,12 @@ impl Storage {
                 turn_count INTEGER NOT NULL,
                 UNIQUE(hour, hostname)
             );
-            CREATE INDEX IF NOT EXISTS idx_token_hourly_hour ON token_hourly(hour);",
+            CREATE INDEX IF NOT EXISTS idx_token_hourly_hour ON token_hourly(hour);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
         )
         .map_err(|e| format!("Failed to create tables: {e}"))?;
 
@@ -704,6 +709,60 @@ impl Storage {
             results.push(row.map_err(|e| format!("Row error: {e}"))?);
         }
         Ok(results)
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let mut stmt = conn
+            .prepare_cached("SELECT value FROM settings WHERE key = ?1")
+            .map_err(|e| format!("Prepare error: {e}"))?;
+        let result = stmt
+            .query_row(params![key], |row| row.get(0))
+            .ok();
+        Ok(result)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )
+        .map_err(|e| format!("Setting write error: {e}"))?;
+        Ok(())
+    }
+
+    pub fn delete_host_data(&self, hostname: &str) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+
+        let snap_count = conn
+            .execute(
+                "DELETE FROM token_snapshots WHERE hostname = ?1",
+                params![hostname],
+            )
+            .map_err(|e| format!("Delete snapshots error: {e}"))?;
+
+        let hourly_count = conn
+            .execute(
+                "DELETE FROM token_hourly WHERE hostname = ?1",
+                params![hostname],
+            )
+            .map_err(|e| format!("Delete hourly error: {e}"))?;
+
+        Ok((snap_count + hourly_count) as u64)
+    }
+
+    pub fn delete_session_data(&self, session_id: &str) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+
+        let count = conn
+            .execute(
+                "DELETE FROM token_snapshots WHERE session_id = ?1",
+                params![session_id],
+            )
+            .map_err(|e| format!("Delete error: {e}"))?;
+
+        Ok(count as u64)
     }
 
     pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {

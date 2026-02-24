@@ -10,7 +10,7 @@ use rand::RngCore;
 use storage::Storage;
 use std::sync::{Mutex, OnceLock};
 use tauri::{Manager, PhysicalPosition};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 static STORAGE: OnceLock<Storage> = OnceLock::new();
@@ -116,6 +116,18 @@ async fn get_session_breakdown(
 }
 
 #[tauri::command]
+async fn delete_host_data(hostname: String) -> Result<u64, String> {
+    let storage = get_storage()?;
+    storage.delete_host_data(&hostname)
+}
+
+#[tauri::command]
+async fn delete_session_data(session_id: String) -> Result<u64, String> {
+    let storage = get_storage()?;
+    storage.delete_session_data(&session_id)
+}
+
+#[tauri::command]
 async fn hide_window(window: tauri::WebviewWindow) {
     if let Ok(pos) = window.outer_position() {
         if let Ok(mut lock) = LAST_POSITION.lock() {
@@ -152,19 +164,32 @@ pub fn run() {
         }
     };
 
-    // Spawn the HTTP token reporting server
-    if let Some(storage) = STORAGE.get() {
-        tauri::async_runtime::spawn(server::start_server(storage, secret));
-    }
-
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .setup(|app| {
+        .setup(move |app| {
+            // Spawn the HTTP token reporting server (needs AppHandle for events)
+            if let Some(storage) = STORAGE.get() {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(server::start_server(storage, secret, handle));
+            }
+
+            // Restore always-on-top preference (default: off)
+            let on_top_enabled = STORAGE
+                .get()
+                .and_then(|s| s.get_setting("always_on_top").ok().flatten())
+                .map(|v| v == "true")
+                .unwrap_or(false);
+
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_always_on_top(on_top_enabled);
+            }
+
             let show = MenuItem::with_id(app, "show", "Show Widget", true, None::<&str>)?;
+            let on_top = CheckMenuItem::with_id(app, "on_top", "Always on Top", true, on_top_enabled, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &on_top, &quit])?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -174,6 +199,20 @@ pub fn run() {
                 .on_menu_event(move |app, event| {
                     match event.id().as_ref() {
                         "show" => show_main_window(app),
+                        "on_top" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                if let Ok(current) = w.is_always_on_top() {
+                                    let new_state = !current;
+                                    let _ = w.set_always_on_top(new_state);
+                                    if let Some(storage) = STORAGE.get() {
+                                        let _ = storage.set_setting(
+                                            "always_on_top",
+                                            if new_state { "true" } else { "false" },
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         "quit" => app.exit(0),
                         _ => {}
                     }
@@ -202,6 +241,8 @@ pub fn run() {
             get_token_hostnames,
             get_host_breakdown,
             get_session_breakdown,
+            delete_host_data,
+            delete_session_data,
             hide_window,
             quit_app,
         ])

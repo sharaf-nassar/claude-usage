@@ -91,9 +91,7 @@ function CustomTooltip({ active, payload, label }) {
 function UsageChart({ data, range, bucket, tokenData }) {
   if (!data || data.length === 0) {
     return (
-      <div className="chart-empty">
-        No data for {bucket} in this range
-      </div>
+      <div className="chart-empty">No data for {bucket} in this range</div>
     );
   }
 
@@ -115,7 +113,7 @@ function UsageChart({ data, range, bucket, tokenData }) {
   if (!hasTokenData) {
     return (
       <div className="chart-container">
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height="100%">
           <AreaChart
             data={data}
             margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
@@ -181,7 +179,7 @@ function UsageChart({ data, range, bucket, tokenData }) {
   // Dual-axis composed chart
   return (
     <div className="chart-container">
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
           data={mergedData}
           margin={{ top: 8, right: 8, left: -20, bottom: 0 }}

@@ -195,6 +195,11 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   scroll-behavior: smooth;
+  min-height: 0;
+}
+
+.panels--split {
+  overflow: hidden;
 }
 
 .panels::-webkit-scrollbar {
@@ -210,6 +215,19 @@ body {
   border-radius: 2px;
 }
 
+.panels--split .analytics-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.panels--split .analytics-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panels--split .analytics-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
 /* Content area */
 .content {
   display: flex;
@@ -220,6 +238,18 @@ body {
 .live-content {
   flex: 1;
   overflow: hidden;
+  min-height: 0;
+}
+
+.panels--split .live-content {
+  overflow: hidden;
+}
+
+.panels--split .analytics-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
 }
 
 /* Usage display */
@@ -509,15 +539,46 @@ body {
   color: rgba(255, 255, 255, 0.85);
 }
 
-/* ─── Divider between live and analytics when both shown ─── */
-.live-content + .analytics-content {
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+/* ─── Draggable divider between live and analytics ─── */
+.panel-divider {
+  flex-shrink: 0;
+  height: 9px;
+  cursor: row-resize;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.panel-divider::before {
+  content: "";
+  width: 100%;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  transition: background 0.15s, height 0.15s;
+}
+
+.panel-divider:hover::before,
+.panel-divider.active::before {
+  background: rgba(96, 165, 250, 0.4);
+  height: 2px;
+}
+
+html.dragging-divider,
+html.dragging-divider * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+html.dragging-divider .panels--split > :not(.panel-divider) {
+  pointer-events: none !important;
 }
 
 /* ─── Analytics content ─── */
 .analytics-content {
-  align-items: flex-start;
+  flex-direction: column;
   flex: 1;
+  overflow: hidden;
+  min-height: 0;
 }
 
 /* ─── Analytics view ─── */
@@ -692,7 +753,16 @@ body {
 }
 
 /* ─── Chart ─── */
+.chart-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 120px;
+}
+
 .chart-container {
+  flex: 1;
+  min-height: 0;
   background: rgba(255, 255, 255, 0.02);
   border-radius: 8px;
   padding: 8px 4px 4px 4px;
@@ -805,7 +875,8 @@ body {
 
 /* ─── Loading skeleton ─── */
 .chart-skeleton {
-  height: 200px;
+  flex: 1;
+  min-height: 120px;
   background: rgba(255, 255, 255, 0.02);
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.04);
@@ -899,11 +970,17 @@ body {
   flex-shrink: 0;
 }
 
-.breakdown-pagination {
+.breakdown-header-right {
   display: flex;
   align-items: center;
   gap: 4px;
   margin-left: auto;
+}
+
+.breakdown-pagination {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .breakdown-page-btn {
@@ -970,7 +1047,7 @@ body {
   grid-template-columns: 1fr auto auto auto;
   align-items: center;
   gap: 10px;
-  padding: 5px 10px;
+  padding: 8px 10px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
   font-size: 11px;
@@ -984,7 +1061,7 @@ body {
 .breakdown-row.selected {
   background: rgba(96, 165, 250, 0.1);
   border: 1px solid rgba(96, 165, 250, 0.25);
-  padding: 4px 9px;
+  padding: 7px 9px;
 }
 
 .breakdown-name {
@@ -1028,6 +1105,61 @@ body {
   color: rgba(255, 255, 255, 0.45);
   font-size: 9px;
   font-weight: 400;
+}
+
+.breakdown-delete-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 3px 7px;
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.breakdown-delete-btn:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.breakdown-delete-btn.confirm {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.3);
+  font-weight: 600;
+  font-size: 9px;
+  padding: 3px 8px;
+  animation: delete-pulse 1s ease-in-out infinite;
+}
+
+@keyframes delete-pulse {
+  0%, 100% { border-color: rgba(248, 113, 113, 0.3); }
+  50% { border-color: rgba(248, 113, 113, 0.6); }
+}
+
+.breakdown-delete-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.breakdown-delete-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(248, 113, 113, 0.3);
+  border-top-color: #f87171;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .breakdown-empty {

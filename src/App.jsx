@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
@@ -14,6 +14,10 @@ const TIME_MODE_KEY = "claude-usage-time-mode";
 const SHOW_LIVE_KEY = "claude-usage-show-live";
 const SHOW_ANALYTICS_KEY = "claude-usage-show-analytics";
 const SIZE_PREFIX = "claude-usage-size-";
+const SPLIT_RATIO_KEY = "claude-usage-split-ratio";
+const DEFAULT_SPLIT_RATIO = 0.4;
+const MIN_SPLIT = 0.15;
+const MAX_SPLIT = 0.85;
 
 const DEFAULT_SIZES = {
   live: { width: 280, height: 340 },
@@ -60,6 +64,19 @@ function loadBool(key, fallback) {
   return fallback;
 }
 
+function loadSplitRatio() {
+  try {
+    const stored = localStorage.getItem(SPLIT_RATIO_KEY);
+    if (stored) {
+      const val = parseFloat(stored);
+      if (val >= MIN_SPLIT && val <= MAX_SPLIT) return val;
+    }
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_SPLIT_RATIO;
+}
+
 function loadTimeMode() {
   try {
     const stored = localStorage.getItem(TIME_MODE_KEY);
@@ -81,7 +98,11 @@ function App() {
   const [showAnalytics, setShowAnalytics] = useState(() =>
     loadBool(SHOW_ANALYTICS_KEY, false),
   );
+  const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
   const liveRef = useRef(null);
+  const panelsRef = useRef(null);
+  const splitRatioRef = useRef(splitRatio);
+  const observerRef = useRef(null);
   const showLiveRef = useRef(showLive);
   const showAnalyticsRef = useRef(showAnalytics);
   const currentLayoutRef = useRef(
@@ -184,6 +205,87 @@ function App() {
     }
   };
 
+  const isSplit = showLive && showAnalytics;
+
+  const handleDividerMouseDown = useCallback((e) => {
+    e.preventDefault();
+    const liveEl = liveRef.current;
+    const panelsEl = panelsRef.current;
+    if (!liveEl || !panelsEl) return;
+
+    // Freeze inner content at current pixel sizes so children skip layout
+    const liveInner = liveEl.querySelector(".usage-display");
+    const analyticsInner = panelsEl.querySelector(".analytics-view");
+    if (liveInner) {
+      liveInner.style.height = `${liveInner.offsetHeight}px`;
+      liveInner.style.overflow = "hidden";
+      liveInner.style.flex = "none";
+    }
+    if (analyticsInner) {
+      analyticsInner.style.height = `${analyticsInner.offsetHeight}px`;
+      analyticsInner.style.overflow = "hidden";
+      analyticsInner.style.flex = "none";
+    }
+
+    // Pause the live panel's ResizeObserver (stops --s cascade)
+    observerRef.current?.disconnect();
+
+    // Add drag classes directly on DOM — no React re-renders
+    document.documentElement.classList.add("dragging-divider");
+    e.currentTarget.classList.add("active");
+
+    let rafId = 0;
+
+    const onMouseMove = (ev) => {
+      cancelAnimationFrame(rafId);
+      const clientY = ev.clientY;
+      rafId = requestAnimationFrame(() => {
+        const rect = panelsEl.getBoundingClientRect();
+        const ratio = Math.max(
+          MIN_SPLIT,
+          Math.min(MAX_SPLIT, (clientY - rect.top) / rect.height),
+        );
+        splitRatioRef.current = ratio;
+        liveEl.style.flex = `0 0 ${ratio * 100}%`;
+      });
+    };
+
+    const onMouseUp = () => {
+      cancelAnimationFrame(rafId);
+      document.documentElement.classList.remove("dragging-divider");
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+
+      // Unfreeze inner content — let flex/auto sizing resume
+      if (liveInner) {
+        liveInner.style.height = "";
+        liveInner.style.overflow = "";
+        liveInner.style.flex = "";
+      }
+      if (analyticsInner) {
+        analyticsInner.style.height = "";
+        analyticsInner.style.overflow = "";
+        analyticsInner.style.flex = "";
+      }
+
+      // Reconnect observer — fires once with final size for --s update
+      if (observerRef.current && liveRef.current) {
+        observerRef.current.observe(liveRef.current);
+      }
+
+      // Sync final ratio into React state once
+      setSplitRatio(splitRatioRef.current);
+      try {
+        localStorage.setItem(SPLIT_RATIO_KEY, String(splitRatioRef.current));
+      } catch {
+        /* ignore */
+      }
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
       const data = await invoke("fetch_usage_data");
@@ -275,10 +377,12 @@ function App() {
     };
 
     const observer = new ResizeObserver(updateScale);
+    observerRef.current = observer;
     observer.observe(el);
     updateScale();
     return () => {
       observer.disconnect();
+      observerRef.current = null;
       cancelAnimationFrame(rafId);
     };
   }, [timeMode, showLive]);
@@ -306,6 +410,11 @@ function App() {
     refresh();
   };
 
+  const liveStyle = useMemo(
+    () => (isSplit ? { flex: `0 0 ${splitRatio * 100}%` } : undefined),
+    [isSplit, splitRatio],
+  );
+
   return (
     <div className="app" onContextMenu={handleContextMenu} onClick={closeMenu}>
       <TitleBar
@@ -318,15 +427,21 @@ function App() {
         updating={updating}
         onUpdate={handleUpdate}
       />
-      <div className="panels">
+      <div
+        className={`panels${isSplit ? " panels--split" : ""}`}
+        ref={panelsRef}
+      >
         {showLive && (
-          <div className="content live-content" ref={liveRef}>
+          <div className="content live-content" ref={liveRef} style={liveStyle}>
             <UsageDisplay
               data={usageData}
               timeMode={timeMode}
               onTimeModeChange={handleTimeModeChange}
             />
           </div>
+        )}
+        {isSplit && (
+          <div className="panel-divider" onMouseDown={handleDividerMouseDown} />
         )}
         {showAnalytics && (
           <div className="content analytics-content">

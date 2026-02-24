@@ -1,6 +1,5 @@
 {
   "productName": "Claude Usage",
-  "version": "0.2.0",
   "identifier": "com.claude.usage-widget",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -33,7 +32,7 @@
         "height": 340,
         "minWidth": 180,
         "minHeight": 100,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "transparent": true,
         "decorations": false,
         "resizable": true

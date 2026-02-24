@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const RANGE_DAYS = {
   "1h": 1,
@@ -7,6 +8,8 @@ const RANGE_DAYS = {
   "7d": 7,
   "30d": 30,
 };
+
+const REFRESH_DEBOUNCE_MS = 1000;
 
 export function useTokenData(range, hostname, sessionId) {
   const [history, setHistory] = useState([]);
@@ -47,6 +50,19 @@ export function useTokenData(range, hostname, sessionId) {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Auto-refresh when new token data arrives via Tauri event
+  useEffect(() => {
+    let timer = null;
+    const unlistenPromise = listen("tokens-updated", () => {
+      clearTimeout(timer);
+      timer = setTimeout(fetchData, REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      clearTimeout(timer);
+      unlistenPromise.then((fn) => fn());
+    };
   }, [fetchData]);
 
   return { history, stats, hostnames, loading, error, refresh: fetchData };

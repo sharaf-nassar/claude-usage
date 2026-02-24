@@ -11,6 +11,8 @@ use axum::{
 };
 use tokio::net::TcpListener;
 
+use tauri::Emitter;
+
 use crate::models::TokenReportPayload;
 use crate::storage::Storage;
 
@@ -24,6 +26,7 @@ struct ServerState {
     storage: &'static Storage,
     secret: String,
     rate_limiter: Mutex<VecDeque<Instant>>,
+    app_handle: tauri::AppHandle,
 }
 
 fn check_auth(headers: &HeaderMap, secret: &str) -> bool {
@@ -68,7 +71,11 @@ fn check_rate_limit(rate_limiter: &Mutex<VecDeque<Instant>>) -> bool {
     true
 }
 
-pub async fn start_server(storage: &'static Storage, secret: String) {
+pub async fn start_server(
+    storage: &'static Storage,
+    secret: String,
+    app_handle: tauri::AppHandle,
+) {
     let port: u16 = std::env::var("CLAUDE_USAGE_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -78,6 +85,7 @@ pub async fn start_server(storage: &'static Storage, secret: String) {
         storage,
         secret,
         rate_limiter: Mutex::new(VecDeque::new()),
+        app_handle,
     });
 
     let app = Router::new()
@@ -145,7 +153,10 @@ async fn report_tokens(
     }
 
     match state.storage.store_token_snapshot(&payload) {
-        Ok(()) => (StatusCode::OK, "ok".to_string()),
+        Ok(()) => {
+            let _ = state.app_handle.emit("tokens-updated", ());
+            (StatusCode::OK, "ok".to_string())
+        }
         Err(e) => {
             eprintln!("Failed to store token snapshot: {e}");
             (
