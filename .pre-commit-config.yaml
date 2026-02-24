@@ -1,0 +1,37 @@
+exclude: '^src-tauri/gen/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: fix-byte-order-marker
+      - id: detect-private-key
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        language: system
+        entry: bash -c 'cd src-tauri && cargo fmt --check'
+        pass_filenames: false
+        types: [rust]
+
+      - id: clippy
+        name: clippy
+        language: system
+        entry: bash -c 'cd src-tauri && cargo clippy -- -D warnings'
+        pass_filenames: false
+        types: [rust]

@@ -6,9 +6,7 @@ use std::path::PathBuf;
 fn secret_path() -> Result<PathBuf, String> {
     let data_dir = dirs::data_local_dir()
         .ok_or_else(|| "cannot determine local data directory".to_string())?;
-    Ok(data_dir
-        .join("com.claude.usage-widget")
-        .join("auth_secret"))
+    Ok(data_dir.join("com.claude.usage-widget").join("auth_secret"))
 }
 
 fn create_secret_file(path: &std::path::Path) -> std::io::Result<fs::File> {
@@ -28,8 +26,8 @@ pub fn load_or_create_secret() -> Result<String, String> {
     let path = secret_path()?;
 
     if path.exists() {
-        let secret = fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read auth secret: {e}"))?;
+        let secret =
+            fs::read_to_string(&path).map_err(|e| format!("failed to read auth secret: {e}"))?;
         let secret = secret.trim().to_string();
         if secret.len() >= 32 {
             return Ok(secret);
@@ -46,8 +44,8 @@ pub fn load_or_create_secret() -> Result<String, String> {
             .map_err(|e| format!("failed to create secret directory: {e}"))?;
     }
 
-    let mut file = create_secret_file(&path)
-        .map_err(|e| format!("failed to create auth secret file: {e}"))?;
+    let mut file =
+        create_secret_file(&path).map_err(|e| format!("failed to create auth secret file: {e}"))?;
     file.write_all(secret.as_bytes())
         .map_err(|e| format!("failed to write auth secret: {e}"))?;
 

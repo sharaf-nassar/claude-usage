@@ -5,13 +5,15 @@ mod models;
 mod server;
 mod storage;
 
-use models::{BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenStats, UsageData};
+use models::{
+    BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenStats, UsageData,
+};
 use rand::RngCore;
-use storage::Storage;
 use std::sync::{Mutex, OnceLock};
-use tauri::{Manager, PhysicalPosition};
+use storage::Storage;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, PhysicalPosition};
 
 static STORAGE: OnceLock<Storage> = OnceLock::new();
 static LAST_POSITION: Mutex<Option<PhysicalPosition<i32>>> = Mutex::new(None);
@@ -19,10 +21,10 @@ static LAST_POSITION: Mutex<Option<PhysicalPosition<i32>>> = Mutex::new(None);
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
-        if let Ok(mut lock) = LAST_POSITION.lock() {
-            if let Some(pos) = lock.take() {
-                let _ = w.set_position(pos);
-            }
+        if let Ok(mut lock) = LAST_POSITION.lock()
+            && let Some(pos) = lock.take()
+        {
+            let _ = w.set_position(pos);
         }
         let _ = w.set_focus();
     }
@@ -38,12 +40,12 @@ fn get_storage() -> Result<&'static Storage, String> {
 async fn fetch_usage_data() -> Result<UsageData, String> {
     let data = fetcher::fetch_usage().await;
 
-    if data.error.is_none() && !data.buckets.is_empty() {
-        if let Ok(storage) = get_storage() {
-            if let Err(e) = storage.store_snapshot(&data.buckets) {
-                eprintln!("Warning: failed to store snapshot: {e}");
-            }
-        }
+    if data.error.is_none()
+        && !data.buckets.is_empty()
+        && let Ok(storage) = get_storage()
+        && let Err(e) = storage.store_snapshot(&data.buckets)
+    {
+        eprintln!("Warning: failed to store snapshot: {e}");
     }
 
     Ok(data)
@@ -64,8 +66,8 @@ async fn get_usage_stats(bucket: String, days: i32) -> Result<BucketStats, Strin
 #[tauri::command]
 async fn get_all_bucket_stats(buckets_json: String, days: i32) -> Result<Vec<BucketStats>, String> {
     let storage = get_storage()?;
-    let buckets: Vec<models::UsageBucket> = serde_json::from_str(&buckets_json)
-        .map_err(|e| format!("Failed to parse buckets: {e}"))?;
+    let buckets: Vec<models::UsageBucket> =
+        serde_json::from_str(&buckets_json).map_err(|e| format!("Failed to parse buckets: {e}"))?;
     storage.get_all_bucket_stats(&buckets, days)
 }
 
@@ -86,10 +88,7 @@ async fn get_token_history(
 }
 
 #[tauri::command]
-async fn get_token_stats(
-    days: i32,
-    hostname: Option<String>,
-) -> Result<TokenStats, String> {
+async fn get_token_stats(days: i32, hostname: Option<String>) -> Result<TokenStats, String> {
     let storage = get_storage()?;
     storage.get_token_stats(days, hostname.as_deref())
 }
@@ -129,10 +128,10 @@ async fn delete_session_data(session_id: String) -> Result<u64, String> {
 
 #[tauri::command]
 async fn hide_window(window: tauri::WebviewWindow) {
-    if let Ok(pos) = window.outer_position() {
-        if let Ok(mut lock) = LAST_POSITION.lock() {
-            *lock = Some(pos);
-        }
+    if let Ok(pos) = window.outer_position()
+        && let Ok(mut lock) = LAST_POSITION.lock()
+    {
+        *lock = Some(pos);
     }
     let _ = window.hide();
 }
@@ -187,7 +186,14 @@ pub fn run() {
             }
 
             let show = MenuItem::with_id(app, "show", "Show Widget", true, None::<&str>)?;
-            let on_top = CheckMenuItem::with_id(app, "on_top", "Always on Top", true, on_top_enabled, None::<&str>)?;
+            let on_top = CheckMenuItem::with_id(
+                app,
+                "on_top",
+                "Always on Top",
+                true,
+                on_top_enabled,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &on_top, &quit])?;
 
@@ -196,26 +202,24 @@ pub fn run() {
                 .tooltip("Claude Usage")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(move |app, event| {
-                    match event.id().as_ref() {
-                        "show" => show_main_window(app),
-                        "on_top" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                if let Ok(current) = w.is_always_on_top() {
-                                    let new_state = !current;
-                                    let _ = w.set_always_on_top(new_state);
-                                    if let Some(storage) = STORAGE.get() {
-                                        let _ = storage.set_setting(
-                                            "always_on_top",
-                                            if new_state { "true" } else { "false" },
-                                        );
-                                    }
-                                }
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "show" => show_main_window(app),
+                    "on_top" => {
+                        if let Some(w) = app.get_webview_window("main")
+                            && let Ok(current) = w.is_always_on_top()
+                        {
+                            let new_state = !current;
+                            let _ = w.set_always_on_top(new_state);
+                            if let Some(storage) = STORAGE.get() {
+                                let _ = storage.set_setting(
+                                    "always_on_top",
+                                    if new_state { "true" } else { "false" },
+                                );
                             }
                         }
-                        "quit" => app.exit(0),
-                        _ => {}
                     }
+                    "quit" => app.exit(0),
+                    _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {

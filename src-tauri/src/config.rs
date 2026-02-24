@@ -24,10 +24,10 @@ pub fn read_access_token() -> Result<String, String> {
         return Err("Credentials file not found. Run: claude /login".into());
     }
 
-    let contents = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read credentials: {e}"))?;
-    let data: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| format!("Failed to parse credentials: {e}"))?;
+    let contents =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read credentials: {e}"))?;
+    let data: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| format!("Failed to parse credentials: {e}"))?;
 
     data["claudeAiOauth"]["accessToken"]
         .as_str()
@@ -41,10 +41,10 @@ pub async fn refresh_access_token() -> Result<String, String> {
         return Err("Credentials file not found".into());
     }
 
-    let contents = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read credentials: {e}"))?;
-    let mut data: serde_json::Value = serde_json::from_str(&contents)
-        .map_err(|e| format!("Failed to parse credentials: {e}"))?;
+    let contents =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read credentials: {e}"))?;
+    let mut data: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| format!("Failed to parse credentials: {e}"))?;
 
     let refresh_token = data["claudeAiOauth"]["refreshToken"]
         .as_str()
@@ -63,7 +63,10 @@ pub async fn refresh_access_token() -> Result<String, String> {
         .map_err(|e| format!("Token refresh request failed: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("Token refresh failed with status: {}", resp.status()));
+        return Err(format!(
+            "Token refresh failed with status: {}",
+            resp.status()
+        ));
     }
 
     let tokens: serde_json::Value = resp
@@ -95,8 +98,8 @@ pub async fn refresh_access_token() -> Result<String, String> {
 
     // Atomic write: write to temp file, set permissions, then rename
     let tmp_path = path.with_extension("json.tmp");
-    let mut tmp = fs::File::create(&tmp_path)
-        .map_err(|e| format!("Failed to create temp file: {e}"))?;
+    let mut tmp =
+        fs::File::create(&tmp_path).map_err(|e| format!("Failed to create temp file: {e}"))?;
 
     #[cfg(unix)]
     {
@@ -110,8 +113,7 @@ pub async fn refresh_access_token() -> Result<String, String> {
         .map_err(|e| format!("Failed to flush temp file: {e}"))?;
     drop(tmp);
 
-    fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("Failed to rename credentials file: {e}"))?;
+    fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename credentials file: {e}"))?;
 
     Ok(new_access)
 }

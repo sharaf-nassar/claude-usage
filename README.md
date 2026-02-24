@@ -19,6 +19,56 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 - Auto-refreshes every 60 seconds
 - Automatically refreshes expired OAuth tokens
 
+## Architecture
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {
+  'primaryColor': '#1e293b',
+  'primaryTextColor': '#e2e8f0',
+  'lineColor': '#94a3b8',
+  'secondaryColor': '#334155',
+  'tertiaryColor': '#0f172a',
+  'fontFamily': 'ui-sans-serif, system-ui, sans-serif',
+  'fontSize': '18px',
+  'edgeLabelBackground': '#334155'
+}}}%%
+
+graph LR
+    subgraph Sources [" "]
+        Claude(["Local Claude Code"])
+        Remote(["Remote Hosts"])
+        API(["Anthropic API"])
+        GH(["GitHub Releases"])
+    end
+
+    Claude -- "&ensp;tokens&ensp;" --> Backend
+    Remote -. "&ensp;tokens · over network&ensp;" .-> Backend
+    API -- "&ensp;usage · every 60s&ensp;" --> Backend
+    GH -- "&ensp;update check&ensp;" --> Frontend
+
+    subgraph Widget [" Tauri Desktop App "]
+        Frontend(["React Frontend"]) <-->|"&ensp;Tauri IPC&ensp;"| Backend(["Rust Backend"])
+        Backend <--> SQLite[(SQLite)]
+    end
+
+    style Claude fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px
+    style Remote fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px,stroke-dasharray: 5 5
+    style API fill:#f59e0b,stroke:#fbbf24,color:#000,stroke-width:2px
+    style GH fill:#10b981,stroke:#34d399,color:#000,stroke-width:2px
+    style Frontend fill:#3b82f6,stroke:#60a5fa,color:#fff,stroke-width:2px
+    style Backend fill:#ef4444,stroke:#f87171,color:#fff,stroke-width:2px
+    style SQLite fill:#a855f7,stroke:#c084fc,color:#fff,stroke-width:2px
+    style Widget fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style Sources fill:transparent,stroke:transparent
+
+    linkStyle 0 stroke:#818cf8,stroke-width:2px
+    linkStyle 1 stroke:#818cf8,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 2 stroke:#f59e0b,stroke-width:2px
+    linkStyle 3 stroke:#10b981,stroke-width:2px
+    linkStyle 4 stroke:#60a5fa,stroke-width:2px
+    linkStyle 5 stroke:#c084fc,stroke-width:2px
+```
+
 ## Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in (`claude /login`)

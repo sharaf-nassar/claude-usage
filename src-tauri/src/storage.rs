@@ -2,17 +2,19 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use chrono::{Duration, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
-use crate::models::{BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenReportPayload, TokenStats, UsageBucket};
+use crate::models::{
+    BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenReportPayload,
+    TokenStats, UsageBucket,
+};
 
 fn db_path() -> Result<PathBuf, String> {
     let data_dir = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
         .ok_or("Cannot determine data directory")?;
     let app_dir = data_dir.join("com.claude.usage-widget");
-    std::fs::create_dir_all(&app_dir)
-        .map_err(|e| format!("Failed to create app data dir: {e}"))?;
+    std::fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create app data dir: {e}"))?;
 
     #[cfg(unix)]
     {
@@ -30,8 +32,7 @@ pub struct Storage {
 impl Storage {
     pub fn init() -> Result<Self, String> {
         let path = db_path()?;
-        let conn = Connection::open(&path)
-            .map_err(|e| format!("Failed to open database: {e}"))?;
+        let conn = Connection::open(&path).map_err(|e| format!("Failed to open database: {e}"))?;
 
         #[cfg(unix)]
         {
@@ -108,10 +109,8 @@ impl Storage {
             .prepare("SELECT cwd FROM token_snapshots LIMIT 0")
             .is_ok();
         if !has_cwd {
-            conn.execute_batch(
-                "ALTER TABLE token_snapshots ADD COLUMN cwd TEXT DEFAULT NULL;",
-            )
-            .map_err(|e| format!("Migration (add cwd column) error: {e}"))?;
+            conn.execute_batch("ALTER TABLE token_snapshots ADD COLUMN cwd TEXT DEFAULT NULL;")
+                .map_err(|e| format!("Migration (add cwd column) error: {e}"))?;
         }
 
         let storage = Self {
@@ -133,7 +132,9 @@ impl Storage {
         let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let now = Utc::now().to_rfc3339();
 
-        let tx = conn.transaction().map_err(|e| format!("Transaction error: {e}"))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Transaction error: {e}"))?;
         {
             let mut stmt = tx
                 .prepare_cached(
@@ -142,8 +143,13 @@ impl Storage {
                 .map_err(|e| format!("Prepare error: {e}"))?;
 
             for bucket in buckets {
-                stmt.execute(params![now, bucket.label, bucket.utilization, bucket.resets_at])
-                    .map_err(|e| format!("Insert error: {e}"))?;
+                stmt.execute(params![
+                    now,
+                    bucket.label,
+                    bucket.utilization,
+                    bucket.resets_at
+                ])
+                .map_err(|e| format!("Insert error: {e}"))?;
             }
         }
         tx.commit().map_err(|e| format!("Commit error: {e}"))?;
@@ -180,11 +186,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn get_usage_history(
-        &self,
-        bucket: &str,
-        range: &str,
-    ) -> Result<Vec<DataPoint>, String> {
+    pub fn get_usage_history(&self, bucket: &str, range: &str) -> Result<Vec<DataPoint>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let now = Utc::now();
 
@@ -282,11 +284,7 @@ impl Storage {
         }
     }
 
-    pub fn get_usage_stats(
-        &self,
-        bucket: &str,
-        days: i32,
-    ) -> Result<BucketStats, String> {
+    pub fn get_usage_stats(&self, bucket: &str, days: i32) -> Result<BucketStats, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         Self::get_usage_stats_with_conn(&conn, bucket, days)
     }
@@ -429,13 +427,75 @@ impl Storage {
                     )
                 };
 
-            let mut stmt = conn.prepare_cached(&hourly_sql)
+            let mut stmt = conn
+                .prepare_cached(&hourly_sql)
                 .map_err(|e| format!("Prepare error: {e}"))?;
 
             let params_refs: Vec<&dyn rusqlite::types::ToSql> =
                 hourly_params.iter().map(|p| p.as_ref()).collect();
 
-            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            let rows = stmt
+                .query_map(params_refs.as_slice(), |row| {
+                    let inp: i64 = row.get(1)?;
+                    let out: i64 = row.get(2)?;
+                    let cc: i64 = row.get(3)?;
+                    let cr: i64 = row.get(4)?;
+                    Ok(TokenDataPoint {
+                        timestamp: row.get(0)?,
+                        input_tokens: inp,
+                        output_tokens: out,
+                        cache_creation_input_tokens: cc,
+                        cache_read_input_tokens: cr,
+                        total_tokens: inp + out + cc + cr,
+                    })
+                })
+                .map_err(|e| format!("Query error: {e}"))?;
+
+            for row in rows {
+                points.push(row.map_err(|e| format!("Row error: {e}"))?);
+            }
+        }
+
+        // Append granular snapshots
+        let (snap_sql, snap_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(
+            sid,
+        ) =
+            session_id
+        {
+            (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND session_id = ?2
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone()), Box::new(sid.to_string())],
+                )
+        } else if let Some(host) = hostname {
+            (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND hostname = ?2
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone()), Box::new(host.to_string())],
+                )
+        } else {
+            (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone())],
+                )
+        };
+
+        let mut stmt2 = conn
+            .prepare_cached(&snap_sql)
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let params_refs2: Vec<&dyn rusqlite::types::ToSql> =
+            snap_params.iter().map(|p| p.as_ref()).collect();
+
+        let snap_rows = stmt2
+            .query_map(params_refs2.as_slice(), |row| {
                 let inp: i64 = row.get(1)?;
                 let out: i64 = row.get(2)?;
                 let cc: i64 = row.get(3)?;
@@ -448,61 +508,8 @@ impl Storage {
                     cache_read_input_tokens: cr,
                     total_tokens: inp + out + cc + cr,
                 })
-            }).map_err(|e| format!("Query error: {e}"))?;
-
-            for row in rows {
-                points.push(row.map_err(|e| format!("Row error: {e}"))?);
-            }
-        }
-
-        // Append granular snapshots
-        let (snap_sql, snap_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            if let Some(sid) = session_id {
-                (
-                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
-                     FROM token_snapshots
-                     WHERE timestamp >= ?1 AND session_id = ?2
-                     ORDER BY timestamp ASC".to_string(),
-                    vec![Box::new(from_str.clone()), Box::new(sid.to_string())],
-                )
-            } else if let Some(host) = hostname {
-                (
-                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
-                     FROM token_snapshots
-                     WHERE timestamp >= ?1 AND hostname = ?2
-                     ORDER BY timestamp ASC".to_string(),
-                    vec![Box::new(from_str.clone()), Box::new(host.to_string())],
-                )
-            } else {
-                (
-                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
-                     FROM token_snapshots
-                     WHERE timestamp >= ?1
-                     ORDER BY timestamp ASC".to_string(),
-                    vec![Box::new(from_str.clone())],
-                )
-            };
-
-        let mut stmt2 = conn.prepare_cached(&snap_sql)
-            .map_err(|e| format!("Prepare error: {e}"))?;
-
-        let params_refs2: Vec<&dyn rusqlite::types::ToSql> =
-            snap_params.iter().map(|p| p.as_ref()).collect();
-
-        let snap_rows = stmt2.query_map(params_refs2.as_slice(), |row| {
-            let inp: i64 = row.get(1)?;
-            let out: i64 = row.get(2)?;
-            let cc: i64 = row.get(3)?;
-            let cr: i64 = row.get(4)?;
-            Ok(TokenDataPoint {
-                timestamp: row.get(0)?,
-                input_tokens: inp,
-                output_tokens: out,
-                cache_creation_input_tokens: cc,
-                cache_read_input_tokens: cr,
-                total_tokens: inp + out + cc + cr,
             })
-        }).map_err(|e| format!("Query error: {e}"))?;
+            .map_err(|e| format!("Query error: {e}"))?;
 
         for row in snap_rows {
             points.push(row.map_err(|e| format!("Row error: {e}"))?);
@@ -518,11 +525,7 @@ impl Storage {
         Ok(downsample_tokens(points, max_points))
     }
 
-    pub fn get_token_stats(
-        &self,
-        days: i32,
-        hostname: Option<&str>,
-    ) -> Result<TokenStats, String> {
+    pub fn get_token_stats(&self, days: i32, hostname: Option<&str>) -> Result<TokenStats, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
 
@@ -536,7 +539,8 @@ impl Storage {
                          COALESCE(SUM(cache_read_input_tokens), 0),
                          COUNT(*)
                      FROM token_snapshots
-                     WHERE timestamp >= ?1 AND hostname = ?2".to_string(),
+                     WHERE timestamp >= ?1 AND hostname = ?2"
+                        .to_string(),
                     vec![Box::new(from), Box::new(host.to_string())],
                 )
             } else {
@@ -548,12 +552,14 @@ impl Storage {
                          COALESCE(SUM(cache_read_input_tokens), 0),
                          COUNT(*)
                      FROM token_snapshots
-                     WHERE timestamp >= ?1".to_string(),
+                     WHERE timestamp >= ?1"
+                        .to_string(),
                     vec![Box::new(from)],
                 )
             };
 
-        let mut stmt = conn.prepare_cached(&sql)
+        let mut stmt = conn
+            .prepare_cached(&sql)
             .map_err(|e| format!("Prepare error: {e}"))?;
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -574,8 +580,16 @@ impl Storage {
                 total_cache_read,
                 total_tokens,
                 turn_count,
-                avg_input_per_turn: if turn_count > 0 { total_input as f64 / turn_count as f64 } else { 0.0 },
-                avg_output_per_turn: if turn_count > 0 { total_output as f64 / turn_count as f64 } else { 0.0 },
+                avg_input_per_turn: if turn_count > 0 {
+                    total_input as f64 / turn_count as f64
+                } else {
+                    0.0
+                },
+                avg_output_per_turn: if turn_count > 0 {
+                    total_output as f64 / turn_count as f64
+                } else {
+                    0.0
+                },
             })
         })
         .map_err(|e| format!("Query error: {e}"))
@@ -643,9 +657,10 @@ impl Storage {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
 
-        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            if let Some(host) = hostname {
-                (
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(host) =
+            hostname
+        {
+            (
                     "SELECT
                          s.session_id,
                          s.hostname,
@@ -663,8 +678,8 @@ impl Storage {
                      LIMIT 10".to_string(),
                     vec![Box::new(from), Box::new(host.to_string())],
                 )
-            } else {
-                (
+        } else {
+            (
                     "SELECT
                          s.session_id,
                          s.hostname,
@@ -682,9 +697,10 @@ impl Storage {
                      LIMIT 10".to_string(),
                     vec![Box::new(from)],
                 )
-            };
+        };
 
-        let mut stmt = conn.prepare_cached(&sql)
+        let mut stmt = conn
+            .prepare_cached(&sql)
             .map_err(|e| format!("Prepare error: {e}"))?;
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -716,9 +732,7 @@ impl Storage {
         let mut stmt = conn
             .prepare_cached("SELECT value FROM settings WHERE key = ?1")
             .map_err(|e| format!("Prepare error: {e}"))?;
-        let result = stmt
-            .query_row(params![key], |row| row.get(0))
-            .ok();
+        let result = stmt.query_row(params![key], |row| row.get(0)).ok();
         Ok(result)
     }
 

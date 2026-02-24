@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::{
+    Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use tokio::net::TcpListener;
 
@@ -71,11 +71,7 @@ fn check_rate_limit(rate_limiter: &Mutex<VecDeque<Instant>>) -> bool {
     true
 }
 
-pub async fn start_server(
-    storage: &'static Storage,
-    secret: String,
-    app_handle: tauri::AppHandle,
-) {
+pub async fn start_server(storage: &'static Storage, secret: String, app_handle: tauri::AppHandle) {
     let port: u16 = std::env::var("CLAUDE_USAGE_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -123,11 +119,17 @@ async fn report_tokens(
     }
 
     if !check_rate_limit(&state.rate_limiter) {
-        return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded".to_string());
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Rate limit exceeded".to_string(),
+        );
     }
 
     if payload.session_id.is_empty() {
-        return (StatusCode::BAD_REQUEST, "session_id is required".to_string());
+        return (
+            StatusCode::BAD_REQUEST,
+            "session_id is required".to_string(),
+        );
     }
     if payload.hostname.is_empty() {
         return (StatusCode::BAD_REQUEST, "hostname is required".to_string());

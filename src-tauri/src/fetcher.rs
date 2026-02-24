@@ -59,7 +59,11 @@ fn parse_buckets(data: &serde_json::Value) -> Vec<UsageBucket> {
             if entry.get("is_enabled").and_then(|v| v.as_bool()) != Some(true) {
                 continue;
             }
-            if let Some(util) = entry.get("utilization").and_then(|v| v.as_f64()).and_then(validate_utilization) {
+            if let Some(util) = entry
+                .get("utilization")
+                .and_then(|v| v.as_f64())
+                .and_then(validate_utilization)
+            {
                 buckets.push(UsageBucket {
                     label: label.into(),
                     utilization: util,
@@ -69,11 +73,16 @@ fn parse_buckets(data: &serde_json::Value) -> Vec<UsageBucket> {
             continue;
         }
 
-        let Some(util) = entry.get("utilization").and_then(|v| v.as_f64()).and_then(validate_utilization) else {
+        let Some(util) = entry
+            .get("utilization")
+            .and_then(|v| v.as_f64())
+            .and_then(validate_utilization)
+        else {
             continue;
         };
 
-        let resets_at = entry.get("resets_at")
+        let resets_at = entry
+            .get("resets_at")
             .and_then(|v| v.as_str())
             .and_then(validate_resets_at);
 
@@ -90,35 +99,55 @@ fn parse_buckets(data: &serde_json::Value) -> Vec<UsageBucket> {
 pub async fn fetch_usage() -> UsageData {
     let token = match read_access_token() {
         Ok(t) => t,
-        Err(e) => return UsageData { buckets: vec![], error: Some(e) },
+        Err(e) => {
+            return UsageData {
+                buckets: vec![],
+                error: Some(e),
+            };
+        }
     };
 
     let resp = match do_fetch(&token).await {
         Ok(r) => r,
-        Err(e) => return UsageData { buckets: vec![], error: Some(format!("Request failed: {e}")) },
+        Err(e) => {
+            return UsageData {
+                buckets: vec![],
+                error: Some(format!("Request failed: {e}")),
+            };
+        }
     };
 
     // On 401, try refreshing the token and retry once
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         match refresh_access_token().await {
-            Ok(new_token) => {
-                match do_fetch(&new_token).await {
-                    Ok(r) => {
-                        if !r.status().is_success() {
-                            return UsageData {
-                                buckets: vec![],
-                                error: Some(format!("API error: {}", r.status())),
-                            };
-                        }
-                        match r.json::<serde_json::Value>().await {
-                            Ok(data) => UsageData { buckets: parse_buckets(&data), error: None },
-                            Err(e) => UsageData { buckets: vec![], error: Some(format!("Parse error: {e}")) },
-                        }
+            Ok(new_token) => match do_fetch(&new_token).await {
+                Ok(r) => {
+                    if !r.status().is_success() {
+                        return UsageData {
+                            buckets: vec![],
+                            error: Some(format!("API error: {}", r.status())),
+                        };
                     }
-                    Err(e) => UsageData { buckets: vec![], error: Some(format!("Retry failed: {e}")) },
+                    match r.json::<serde_json::Value>().await {
+                        Ok(data) => UsageData {
+                            buckets: parse_buckets(&data),
+                            error: None,
+                        },
+                        Err(e) => UsageData {
+                            buckets: vec![],
+                            error: Some(format!("Parse error: {e}")),
+                        },
+                    }
                 }
-            }
-            Err(e) => UsageData { buckets: vec![], error: Some(format!("Token refresh failed: {e}")) },
+                Err(e) => UsageData {
+                    buckets: vec![],
+                    error: Some(format!("Retry failed: {e}")),
+                },
+            },
+            Err(e) => UsageData {
+                buckets: vec![],
+                error: Some(format!("Token refresh failed: {e}")),
+            },
         }
     } else if !resp.status().is_success() {
         UsageData {
@@ -127,8 +156,14 @@ pub async fn fetch_usage() -> UsageData {
         }
     } else {
         match resp.json::<serde_json::Value>().await {
-            Ok(data) => UsageData { buckets: parse_buckets(&data), error: None },
-            Err(e) => UsageData { buckets: vec![], error: Some(format!("Parse error: {e}")) },
+            Ok(data) => UsageData {
+                buckets: parse_buckets(&data),
+                error: None,
+            },
+            Err(e) => UsageData {
+                buckets: vec![],
+                error: Some(format!("Parse error: {e}")),
+            },
         }
     }
 }
