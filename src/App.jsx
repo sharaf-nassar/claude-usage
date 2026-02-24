@@ -123,10 +123,12 @@ function App() {
     const prevKey = currentLayoutRef.current;
     const nextKey = layoutKey(nextLive, nextAnalytics);
 
+    let currentWidth;
     if (prevKey) {
       try {
         const size = await getCurrentWindow().innerSize();
-        saveSize(prevKey, Math.round(size.width), Math.round(size.height));
+        currentWidth = Math.round(size.width);
+        saveSize(prevKey, currentWidth, Math.round(size.height));
       } catch {
         /* ignore */
       }
@@ -149,11 +151,10 @@ function App() {
     }
 
     if (nextKey) {
-      const size = loadSize(nextKey);
+      const saved = loadSize(nextKey);
+      const width = currentWidth ?? saved.width;
       try {
-        await getCurrentWindow().setSize(
-          new LogicalSize(size.width, size.height),
-        );
+        await getCurrentWindow().setSize(new LogicalSize(width, saved.height));
       } catch {
         /* ignore */
       }

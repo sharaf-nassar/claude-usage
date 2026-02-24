@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
 
-use crate::models::{BucketStats, DataPoint, TokenDataPoint, TokenReportPayload, TokenStats, UsageBucket};
+use crate::models::{BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenReportPayload, TokenStats, UsageBucket};
 
 fn db_path() -> Result<PathBuf, String> {
     let data_dir = dirs::data_local_dir()
@@ -369,6 +369,7 @@ impl Storage {
         &self,
         range: &str,
         hostname: Option<&str>,
+        session_id: Option<&str>,
     ) -> Result<Vec<TokenDataPoint>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let now = Utc::now();
@@ -377,8 +378,10 @@ impl Storage {
             "1h" => (now - Duration::hours(1), false),
             "24h" => (now - Duration::hours(24), false),
             "7d" => (now - Duration::days(7), false),
-            "30d" => (now - Duration::days(30), true),
-            "all" => (now - Duration::days(365), true),
+            // Skip hourly aggregates when filtering by session_id since
+            // token_hourly doesn't store session_id
+            "30d" => (now - Duration::days(30), session_id.is_none()),
+            "all" => (now - Duration::days(365), session_id.is_none()),
             _ => (now - Duration::hours(24), false),
         };
 
@@ -436,7 +439,15 @@ impl Storage {
 
         // Append granular snapshots
         let (snap_sql, snap_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            if let Some(host) = hostname {
+            if let Some(sid) = session_id {
+                (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND session_id = ?2
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone()), Box::new(sid.to_string())],
+                )
+            } else if let Some(host) = hostname {
                 (
                     "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
                      FROM token_snapshots
@@ -567,6 +578,112 @@ impl Storage {
             hostnames.push(row.map_err(|e| format!("Row error: {e}"))?);
         }
         Ok(hostnames)
+    }
+
+    pub fn get_host_breakdown(&self, days: i32) -> Result<Vec<HostBreakdown>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT
+                     hostname,
+                     SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens,
+                     COUNT(*) as turn_count,
+                     MAX(timestamp) as last_active
+                 FROM token_snapshots
+                 WHERE timestamp >= ?1
+                 GROUP BY hostname
+                 ORDER BY total_tokens DESC
+                 LIMIT 50",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map(params![from], |row| {
+                Ok(HostBreakdown {
+                    hostname: row.get(0)?,
+                    total_tokens: row.get(1)?,
+                    turn_count: row.get(2)?,
+                    last_active: row.get(3)?,
+                })
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_session_breakdown(
+        &self,
+        days: i32,
+        hostname: Option<&str>,
+    ) -> Result<Vec<SessionBreakdown>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(host) = hostname {
+                (
+                    "SELECT
+                         session_id,
+                         hostname,
+                         SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens,
+                         COUNT(*) as turn_count,
+                         MIN(timestamp) as first_seen,
+                         MAX(timestamp) as last_active
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND hostname = ?2
+                     GROUP BY session_id
+                     ORDER BY last_active DESC
+                     LIMIT 10".to_string(),
+                    vec![Box::new(from), Box::new(host.to_string())],
+                )
+            } else {
+                (
+                    "SELECT
+                         session_id,
+                         hostname,
+                         SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens,
+                         COUNT(*) as turn_count,
+                         MIN(timestamp) as first_seen,
+                         MAX(timestamp) as last_active
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1
+                     GROUP BY session_id
+                     ORDER BY last_active DESC
+                     LIMIT 10".to_string(),
+                    vec![Box::new(from)],
+                )
+            };
+
+        let mut stmt = conn.prepare_cached(&sql)
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                Ok(SessionBreakdown {
+                    session_id: row.get(0)?,
+                    hostname: row.get(1)?,
+                    total_tokens: row.get(2)?,
+                    turn_count: row.get(3)?,
+                    first_seen: row.get(4)?,
+                    last_active: row.get(5)?,
+                })
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(results)
     }
 
     pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {
