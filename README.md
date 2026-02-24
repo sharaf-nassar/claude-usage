@@ -37,9 +37,42 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 ### From releases
 
 Download the latest release for your platform from the [Releases](../../releases) page:
-- Linux: `.AppImage`
-- Windows: `.exe`
-- macOS: `.dmg`
+- **Linux**: `.AppImage`
+- **Windows**: `.exe`
+- **macOS**: `.dmg`
+
+#### Linux setup
+
+The AppImage is a portable executable — no installation or sudo required:
+
+```bash
+chmod +x Claude.Usage_*_linux_amd64.AppImage
+./Claude.Usage_*_linux_amd64.AppImage
+```
+
+To integrate it as a desktop app (shows up in your app launcher):
+
+```bash
+mkdir -p ~/Applications
+mv Claude.Usage_*_linux_amd64.AppImage ~/Applications/
+chmod +x ~/Applications/Claude.Usage_*_linux_amd64.AppImage
+
+# Download the app icon
+mkdir -p ~/.local/share/icons
+curl -fsSL https://raw.githubusercontent.com/sharaf-nassar/claude-usage/main/src-tauri/icons/icon.png \
+  -o ~/.local/share/icons/claude-usage.png
+
+# Create the desktop entry
+mkdir -p ~/.local/share/applications
+cat > ~/.local/share/applications/claude-usage.desktop << EOF
+[Desktop Entry]
+Name=Claude Usage
+Exec=$HOME/Applications/Claude.Usage_0.1.0_linux_amd64.AppImage
+Icon=$HOME/.local/share/icons/claude-usage.png
+Type=Application
+Categories=Utility;
+EOF
+```
 
 ### From source
 

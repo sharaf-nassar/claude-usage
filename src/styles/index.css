@@ -1016,6 +1016,13 @@ body {
   white-space: nowrap;
 }
 
+.breakdown-project-tag {
+  margin-left: 5px;
+  color: rgba(52, 211, 153, 0.7);
+  font-size: 9px;
+  font-weight: 500;
+}
+
 .breakdown-host-tag {
   margin-left: 5px;
   color: rgba(255, 255, 255, 0.45);

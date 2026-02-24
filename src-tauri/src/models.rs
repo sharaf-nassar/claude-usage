@@ -9,6 +9,8 @@ pub struct TokenReportPayload {
     pub output_tokens: i64,
     pub cache_creation_input_tokens: i64,
     pub cache_read_input_tokens: i64,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 // Time-series point for token charts
@@ -72,6 +74,7 @@ pub struct SessionBreakdown {
     pub turn_count: i64,
     pub first_seen: String,
     pub last_active: String,
+    pub project: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

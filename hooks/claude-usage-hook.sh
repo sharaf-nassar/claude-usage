@@ -74,6 +74,12 @@ data = json.load(sys.stdin)
 print(data.get('transcript_path', ''))
 " 2>/dev/null || true)
 
+CWD=$(echo "$HOOK_INPUT" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('cwd') or '')
+" 2>/dev/null || true)
+
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
     exit 0
 fi
@@ -125,8 +131,11 @@ payload = {
     'cache_creation_input_tokens': usage['cache_creation_input_tokens'],
     'cache_read_input_tokens': usage['cache_read_input_tokens'],
 }
+cwd = sys.argv[4]
+if cwd:
+    payload['cwd'] = cwd
 print(json.dumps(payload))
-" "$USAGE_JSON" "$SESSION_ID" "$HOSTNAME_ID" 2>/dev/null || true)
+" "$USAGE_JSON" "$SESSION_ID" "$HOSTNAME_ID" "$CWD" 2>/dev/null || true)
 
 if [ -z "$PAYLOAD" ]; then
     exit 0

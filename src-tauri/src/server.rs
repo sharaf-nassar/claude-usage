@@ -18,6 +18,7 @@ const DEFAULT_PORT: u16 = 19876;
 const MAX_REQUESTS: usize = 100;
 const RATE_WINDOW_SECS: u64 = 60;
 const MAX_STRING_LEN: usize = 256;
+const MAX_CWD_LEN: usize = 4096;
 
 struct ServerState {
     storage: &'static Storage,
@@ -128,6 +129,9 @@ async fn report_tokens(
     }
     if payload.hostname.len() > MAX_STRING_LEN {
         return (StatusCode::BAD_REQUEST, "hostname too long".to_string());
+    }
+    if payload.cwd.as_ref().is_some_and(|c| c.len() > MAX_CWD_LEN) {
+        return (StatusCode::BAD_REQUEST, "cwd too long".to_string());
     }
     if payload.input_tokens < 0
         || payload.output_tokens < 0
