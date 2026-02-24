@@ -15,6 +15,7 @@
     "core:window:allow-set-focus",
     "core:tray:default",
     "window-state:default",
-    "updater:default"
+    "updater:default",
+    "process:allow-restart"
   ]
 }
