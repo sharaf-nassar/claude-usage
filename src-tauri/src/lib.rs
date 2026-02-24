@@ -5,7 +5,7 @@ mod models;
 mod server;
 mod storage;
 
-use models::{BucketStats, DataPoint, TokenDataPoint, TokenStats, UsageData};
+use models::{BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenStats, UsageData};
 use rand::RngCore;
 use storage::Storage;
 use std::sync::{Mutex, OnceLock};
@@ -79,9 +79,10 @@ async fn get_snapshot_count() -> Result<i64, String> {
 async fn get_token_history(
     range: String,
     hostname: Option<String>,
+    session_id: Option<String>,
 ) -> Result<Vec<TokenDataPoint>, String> {
     let storage = get_storage()?;
-    storage.get_token_history(&range, hostname.as_deref())
+    storage.get_token_history(&range, hostname.as_deref(), session_id.as_deref())
 }
 
 #[tauri::command]
@@ -97,6 +98,21 @@ async fn get_token_stats(
 async fn get_token_hostnames() -> Result<Vec<String>, String> {
     let storage = get_storage()?;
     storage.get_token_hostnames()
+}
+
+#[tauri::command]
+async fn get_host_breakdown(days: i32) -> Result<Vec<HostBreakdown>, String> {
+    let storage = get_storage()?;
+    storage.get_host_breakdown(days)
+}
+
+#[tauri::command]
+async fn get_session_breakdown(
+    days: i32,
+    hostname: Option<String>,
+) -> Result<Vec<SessionBreakdown>, String> {
+    let storage = get_storage()?;
+    storage.get_session_breakdown(days, hostname.as_deref())
 }
 
 #[tauri::command]
@@ -183,6 +199,8 @@ pub fn run() {
             get_token_history,
             get_token_stats,
             get_token_hostnames,
+            get_host_breakdown,
+            get_session_breakdown,
             hide_window,
             quit_app,
         ])

@@ -1,3 +1,6 @@
+import { useState, useEffect } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+
 function TitleBar({
   showLive,
   showAnalytics,
@@ -5,6 +8,14 @@ function TitleBar({
   onToggleAnalytics,
   onClose,
 }) {
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion()
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
+
   return (
     <div className="titlebar" data-tauri-drag-region>
       <div className="titlebar-left">
@@ -26,7 +37,12 @@ function TitleBar({
       <span className="titlebar-text" data-tauri-drag-region>
         CLAUDE USAGE
       </span>
-      <button className="titlebar-close" onClick={onClose}>
+      {version && <span className="titlebar-version">v{version}</span>}
+      <button
+        className="titlebar-close"
+        onClick={onClose}
+        aria-label="Close window"
+      >
         &times;
       </button>
     </div>

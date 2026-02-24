@@ -9,6 +9,12 @@ function colorClass(utilization) {
   return "red";
 }
 
+function statusText(utilization) {
+  if (utilization < 50) return "";
+  if (utilization < 80) return "High";
+  return "Crit";
+}
+
 function gradientColor(utilization) {
   const t = Math.max(0, Math.min(utilization / 100, 1));
   let r, g, b;
@@ -193,9 +199,23 @@ function BackgroundBar({ fraction, cls, timeFraction }) {
   );
 }
 
-function UsageRow({ label, utilization, resetsAt, timeMode, showTokenSparkline }) {
+function UsageRow({
+  label,
+  utilization,
+  resetsAt,
+  timeMode,
+  showTokenSparkline,
+}) {
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const fraction = Math.min(utilization / 100, 1);
   const cls = colorClass(utilization);
+  const status = statusText(utilization);
   const pctColor = gradientColor(utilization);
   const countdown = formatCountdown(resetsAt);
   const timeFraction = getTimeFraction(resetsAt, label);
@@ -207,6 +227,9 @@ function UsageRow({ label, utilization, resetsAt, timeMode, showTokenSparkline }
         <span className="row-label">{formatNumUnit(label)}</span>
         <span className="row-percent" style={{ color: pctColor }}>
           {Math.round(utilization)}%
+          <span className="status-label" style={{ color: pctColor }}>
+            {status}
+          </span>
         </span>
         <span className="row-countdown">{countdown}</span>
       </div>
@@ -217,7 +240,11 @@ function UsageRow({ label, utilization, resetsAt, timeMode, showTokenSparkline }
         <DualBar fraction={fraction} cls={cls} timeFraction={timeFraction} />
       )}
       {timeMode === "background" && (
-        <BackgroundBar fraction={fraction} cls={cls} timeFraction={timeFraction} />
+        <BackgroundBar
+          fraction={fraction}
+          cls={cls}
+          timeFraction={timeFraction}
+        />
       )}
       {showTokenSparkline && <TokenSparkline />}
     </div>

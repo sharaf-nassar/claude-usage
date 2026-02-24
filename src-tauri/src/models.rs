@@ -54,6 +54,26 @@ pub struct DataPoint {
     pub utilization: f64,
 }
 
+// Host-level token breakdown
+#[derive(Serialize, Clone, Debug)]
+pub struct HostBreakdown {
+    pub hostname: String,
+    pub total_tokens: i64,
+    pub turn_count: i64,
+    pub last_active: String,
+}
+
+// Session-level token breakdown
+#[derive(Serialize, Clone, Debug)]
+pub struct SessionBreakdown {
+    pub session_id: String,
+    pub hostname: String,
+    pub total_tokens: i64,
+    pub turn_count: i64,
+    pub first_seen: String,
+    pub last_active: String,
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct BucketStats {
     pub label: String,

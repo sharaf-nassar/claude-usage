@@ -8,7 +8,7 @@ const RANGE_DAYS = {
   "30d": 30,
 };
 
-export function useTokenData(range, hostname) {
+export function useTokenData(range, hostname, sessionId) {
   const [history, setHistory] = useState([]);
   const [stats, setStats] = useState(null);
   const [hostnames, setHostnames] = useState([]);
@@ -22,9 +22,14 @@ export function useTokenData(range, hostname) {
     try {
       const days = RANGE_DAYS[range] ?? 1;
       const hostnameArg = hostname || null;
+      const sessionIdArg = sessionId || null;
 
       const [historyData, statsData, hostnameData] = await Promise.all([
-        invoke("get_token_history", { range, hostname: hostnameArg }),
+        invoke("get_token_history", {
+          range,
+          hostname: hostnameArg,
+          sessionId: sessionIdArg,
+        }),
         invoke("get_token_stats", { days, hostname: hostnameArg }),
         invoke("get_token_hostnames"),
       ]);
@@ -38,7 +43,7 @@ export function useTokenData(range, hostname) {
     } finally {
       setLoading(false);
     }
-  }, [range, hostname]);
+  }, [range, hostname, sessionId]);
 
   useEffect(() => {
     fetchData();
