@@ -128,18 +128,6 @@ function App() {
     await invoke("hide_window");
   }, [saveCurrentSize]);
 
-  const restoreSize = useCallback(async (key) => {
-    if (!key) return;
-    const size = loadSize(key);
-    try {
-      await getCurrentWindow().setSize(
-        new LogicalSize(size.width, size.height),
-      );
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   const switchLayout = useCallback(async (nextLive, nextAnalytics) => {
     const prevKey = currentLayoutRef.current;
     const nextKey = layoutKey(nextLive, nextAnalytics);

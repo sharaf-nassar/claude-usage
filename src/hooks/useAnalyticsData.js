@@ -64,6 +64,7 @@ export function useAnalyticsData(bucket, range, currentBuckets) {
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hasBuckets triggers re-fetch when buckets arrive (data read from ref)
   }, [bucket, range, hasBuckets]);
 
   useEffect(() => {

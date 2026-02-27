@@ -35,3 +35,10 @@ repos:
         entry: bash -c 'cd src-tauri && cargo clippy -- -D warnings'
         pass_filenames: false
         types: [rust]
+
+      - id: eslint
+        name: eslint
+        language: system
+        entry: npx eslint --max-warnings=0
+        types_or: [javascript, jsx]
+        files: ^src/

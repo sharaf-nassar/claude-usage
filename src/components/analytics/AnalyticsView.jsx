@@ -122,19 +122,26 @@ function AnalyticsView({ currentBuckets }) {
     .map((b) => `${b.label}:${b.utilization}`)
     .join(",");
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- bucketsKey is an intentional stabilizer for currentBuckets
   const stableBuckets = useMemo(() => currentBuckets, [bucketsKey]);
 
-  const { history, stats, allStats, snapshotCount, loading, error } =
-    useAnalyticsData(selectedBucket, range, stableBuckets);
+  const { history, stats, snapshotCount, loading, error } = useAnalyticsData(
+    selectedBucket,
+    range,
+    stableBuckets,
+  );
 
   const tokenHostname =
     breakdownSelection?.type === "host" ? breakdownSelection.key : null;
   const tokenSessionId =
     breakdownSelection?.type === "session" ? breakdownSelection.key : null;
+  const tokenCwd =
+    breakdownSelection?.type === "project" ? breakdownSelection.key : null;
   const { history: tokenHistory } = useTokenData(
     tokenRange,
     tokenHostname,
     tokenSessionId,
+    tokenCwd,
   );
 
   if (snapshotCount === 0 && !loading) {
@@ -236,7 +243,9 @@ function AnalyticsView({ currentBuckets }) {
                 <span className="filter-badge">
                   {breakdownSelection.type === "host"
                     ? breakdownSelection.key
-                    : breakdownSelection.key.slice(0, 8)}
+                    : breakdownSelection.type === "project"
+                      ? breakdownSelection.key.split("/").filter(Boolean).pop()
+                      : breakdownSelection.key.slice(0, 8)}
                   <button
                     className="filter-badge-clear"
                     onClick={() => setBreakdownSelection(null)}
