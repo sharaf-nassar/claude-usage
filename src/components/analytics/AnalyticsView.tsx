@@ -4,17 +4,25 @@ import { useTokenData } from "../../hooks/useTokenData";
 import UsageChart from "./UsageChart";
 import BreakdownPanel from "./BreakdownPanel";
 import { getColor, TrendArrow } from "./shared";
+import type { RangeType, UsageBucket, BreakdownSelection } from "../../types";
 
-function BucketDropdown({ value, options, onChange }) {
+interface BucketDropdownProps {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}
+
+function BucketDropdown({ value, options, onChange }: BucketDropdownProps) {
   const [open, setOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
-  const ref = useRef(null);
-  const itemRefs = useRef([]);
+  const ref = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -22,11 +30,11 @@ function BucketDropdown({ value, options, onChange }) {
 
   useEffect(() => {
     if (open && focusIdx >= 0 && itemRefs.current[focusIdx]) {
-      itemRefs.current[focusIdx].focus();
+      itemRefs.current[focusIdx]!.focus();
     }
   }, [open, focusIdx]);
 
-  const handleTriggerKeyDown = (e) => {
+  const handleTriggerKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       setOpen(true);
@@ -34,7 +42,7 @@ function BucketDropdown({ value, options, onChange }) {
     }
   };
 
-  const handleMenuKeyDown = (e) => {
+  const handleMenuKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       setOpen(false);
       setFocusIdx(-1);
@@ -78,7 +86,9 @@ function BucketDropdown({ value, options, onChange }) {
           {options.map((opt, i) => (
             <button
               key={opt}
-              ref={(el) => (itemRefs.current[i] = el)}
+              ref={(el) => {
+                itemRefs.current[i] = el;
+              }}
               className={`bucket-dropdown-item${opt === value ? " active" : ""}`}
               role="option"
               aria-selected={opt === value}
@@ -98,23 +108,42 @@ function BucketDropdown({ value, options, onChange }) {
   );
 }
 
-const RANGES = ["1h", "24h", "7d", "30d"];
-const RANGE_LABELS = { "1h": "1H", "24h": "24H", "7d": "7D", "30d": "30D" };
-const RANGE_DAYS = { "1h": 1, "24h": 1, "7d": 7, "30d": 30 };
-const DAYS_TO_RANGE = { 1: "24h", 7: "7d", 30: "30d" };
+const RANGES: RangeType[] = ["1h", "24h", "7d", "30d"];
+const RANGE_LABELS: Record<RangeType, string> = {
+  "1h": "1H",
+  "24h": "24H",
+  "7d": "7D",
+  "30d": "30D",
+};
+const RANGE_DAYS: Record<RangeType, number> = {
+  "1h": 1,
+  "24h": 1,
+  "7d": 7,
+  "30d": 30,
+};
+const DAYS_TO_RANGE: Record<number, RangeType> = {
+  1: "24h",
+  7: "7d",
+  30: "30d",
+};
 
-function AnalyticsView({ currentBuckets }) {
-  const [range, setRange] = useState("24h");
+interface AnalyticsViewProps {
+  currentBuckets: UsageBucket[];
+}
+
+function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
+  const [range, setRange] = useState<RangeType>("24h");
   const [selectedBucket, setSelectedBucket] = useState(
     () => currentBuckets?.[0]?.label ?? "7 days",
   );
-  const [breakdownSelection, setBreakdownSelection] = useState(null);
+  const [breakdownSelection, setBreakdownSelection] =
+    useState<BreakdownSelection | null>(null);
 
   const breakdownDays = RANGE_DAYS[range] ?? 1;
   const hasSelection = breakdownSelection !== null;
   // When a breakdown entry is selected, use the breakdown's full time scope
   // so older entries always have visible data in the chart
-  const tokenRange = hasSelection
+  const tokenRange: RangeType = hasSelection
     ? (DAYS_TO_RANGE[breakdownDays] ?? "24h")
     : range;
 
@@ -220,8 +249,8 @@ function AnalyticsView({ currentBuckets }) {
 
       {error && (
         <div className="analytics-error" role="alert">
-          {console.error("Analytics error:", error) ||
-            "Failed to load analytics"}
+          {void console.error("Analytics error:", error)}
+          Failed to load analytics
         </div>
       )}
 
@@ -239,7 +268,7 @@ function AnalyticsView({ currentBuckets }) {
           <div className="chart-section">
             <div className="section-title">
               {selectedBucket} Usage
-              {hasSelection && (
+              {hasSelection && breakdownSelection && (
                 <span className="filter-badge">
                   {breakdownSelection.type === "host"
                     ? breakdownSelection.key

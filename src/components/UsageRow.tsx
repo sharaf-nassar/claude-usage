@@ -1,23 +1,25 @@
+import type { ReactNode } from "react";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LineChart, Line, YAxis, ResponsiveContainer } from "recharts";
 import { formatTokenCount } from "../utils/tokens";
+import type { TimeMode, TokenDataPoint } from "../types";
 
-function colorClass(utilization) {
+function colorClass(utilization: number): string {
   if (utilization < 50) return "green";
   if (utilization < 80) return "yellow";
   return "red";
 }
 
-function statusText(utilization) {
+function statusText(utilization: number): string {
   if (utilization < 50) return "";
   if (utilization < 80) return "High";
   return "Crit";
 }
 
-function gradientColor(utilization) {
+function gradientColor(utilization: number): string {
   const t = Math.max(0, Math.min(utilization / 100, 1));
-  let r, g, b;
+  let r: number, g: number, b: number;
   if (t < 0.5) {
     const f = t / 0.5;
     r = Math.round(52 + (251 - 52) * f);
@@ -32,19 +34,21 @@ function gradientColor(utilization) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function formatCountdown(resetsAt) {
+function formatCountdown(resetsAt: string | null): ReactNode[] | null {
   if (!resetsAt) return null;
   try {
     const resetDate = new Date(resetsAt);
     const now = new Date();
-    const totalSeconds = Math.floor((resetDate - now) / 1000);
+    const totalSeconds = Math.floor(
+      (resetDate.getTime() - now.getTime()) / 1000,
+    );
     if (totalSeconds <= 0) return formatNumUnit("now");
 
     const days = Math.floor(totalSeconds / 86400);
     const hours = Math.floor((totalSeconds % 86400) / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
 
-    let raw;
+    let raw: string;
     if (days > 0) {
       raw = `${days}d ${String(hours).padStart(2, "0")}h`;
     } else if (hours > 0) {
@@ -58,7 +62,7 @@ function formatCountdown(resetsAt) {
   }
 }
 
-function formatNumUnit(text) {
+function formatNumUnit(text: string): ReactNode[] {
   return text.split("").map((ch, i) => {
     const isDigit = ch >= "0" && ch <= "9";
     return (
@@ -69,12 +73,12 @@ function formatNumUnit(text) {
   });
 }
 
-function getTimeFraction(resetsAt, label) {
+function getTimeFraction(resetsAt: string | null, label: string): number | null {
   if (!resetsAt) return null;
   try {
     const resetDate = new Date(resetsAt);
     const now = new Date();
-    const remainingMs = resetDate - now;
+    const remainingMs = resetDate.getTime() - now.getTime();
 
     const isFiveHour =
       label.toLowerCase().includes("5") && label.toLowerCase().includes("hour");
@@ -88,11 +92,14 @@ function getTimeFraction(resetsAt, label) {
 }
 
 function TokenSparkline() {
-  const [sparkData, setSparkData] = useState([]);
+  const [sparkData, setSparkData] = useState<TokenDataPoint[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    invoke("get_token_history", { range: "24h", hostname: null })
+    invoke<TokenDataPoint[]>("get_token_history", {
+      range: "24h",
+      hostname: null,
+    })
       .then((data) => {
         if (!cancelled && data.length > 0) {
           const sampled =
@@ -139,7 +146,13 @@ function TokenSparkline() {
   );
 }
 
-function MarkerBar({ fraction, cls, timeFraction }) {
+interface BarProps {
+  fraction: number;
+  cls: string;
+  timeFraction: number | null;
+}
+
+function MarkerBar({ fraction, cls, timeFraction }: BarProps) {
   return (
     <div className="progress-track marker-track">
       <div
@@ -156,7 +169,7 @@ function MarkerBar({ fraction, cls, timeFraction }) {
   );
 }
 
-function DualBar({ fraction, cls, timeFraction }) {
+function DualBar({ fraction, cls, timeFraction }: BarProps) {
   return (
     <div className="bars">
       <div className="progress-track">
@@ -180,7 +193,7 @@ function DualBar({ fraction, cls, timeFraction }) {
   );
 }
 
-function BackgroundBar({ fraction, cls, timeFraction }) {
+function BackgroundBar({ fraction, cls, timeFraction }: BarProps) {
   return (
     <>
       {timeFraction !== null && (
@@ -199,13 +212,21 @@ function BackgroundBar({ fraction, cls, timeFraction }) {
   );
 }
 
+interface UsageRowProps {
+  label: string;
+  utilization: number;
+  resetsAt: string | null;
+  timeMode: TimeMode;
+  showTokenSparkline: boolean;
+}
+
 function UsageRow({
   label,
   utilization,
   resetsAt,
   timeMode,
   showTokenSparkline,
-}) {
+}: UsageRowProps) {
   const [, setTick] = useState(0);
 
   useEffect(() => {

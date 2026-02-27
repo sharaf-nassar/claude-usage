@@ -40,5 +40,5 @@ repos:
         name: eslint
         language: system
         entry: npx eslint --max-warnings=0
-        types_or: [javascript, jsx]
+        types_or: [ts, tsx]
         files: ^src/

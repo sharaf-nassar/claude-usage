@@ -1,5 +1,17 @@
 import { useState, useEffect } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import type { PendingUpdate } from "../types";
+
+interface TitleBarProps {
+  showLive: boolean;
+  showAnalytics: boolean;
+  onToggleLive: (on: boolean) => void;
+  onToggleAnalytics: (on: boolean) => void;
+  onClose: () => void;
+  pendingUpdate: PendingUpdate | null;
+  updating: boolean;
+  onUpdate: () => void;
+}
 
 function TitleBar({
   showLive,
@@ -10,7 +22,7 @@ function TitleBar({
   pendingUpdate,
   updating,
   onUpdate,
-}) {
+}: TitleBarProps) {
   const [version, setVersion] = useState("");
 
   useEffect(() => {

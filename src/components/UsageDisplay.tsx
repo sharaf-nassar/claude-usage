@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import UsageRow from "./UsageRow";
+import type { UsageData, TimeMode } from "../types";
 
-const TIME_MODES = [
+const TIME_MODES: { key: TimeMode; label: string; tip: string }[] = [
   {
     key: "marker",
     label: "Pace marker",
@@ -19,16 +20,25 @@ const TIME_MODES = [
   },
 ];
 
-function UsageDisplay({ data, timeMode, onTimeModeChange }) {
+interface UsageDisplayProps {
+  data: UsageData | null;
+  timeMode: TimeMode;
+  onTimeModeChange: (mode: TimeMode) => void;
+}
+
+function UsageDisplay({ data, timeMode, onTimeModeChange }: UsageDisplayProps) {
   const [open, setOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
-  const menuRef = useRef(null);
-  const itemRefs = useRef([]);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     if (!open) return;
-    const handler = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
+    const handler = (e: MouseEvent) => {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     };
@@ -38,7 +48,7 @@ function UsageDisplay({ data, timeMode, onTimeModeChange }) {
 
   useEffect(() => {
     if (open && focusIdx >= 0 && itemRefs.current[focusIdx]) {
-      itemRefs.current[focusIdx].focus();
+      itemRefs.current[focusIdx]!.focus();
     }
   }, [open, focusIdx]);
 
@@ -117,7 +127,9 @@ function UsageDisplay({ data, timeMode, onTimeModeChange }) {
               {TIME_MODES.map((m, i) => (
                 <button
                   key={m.key}
-                  ref={(el) => (itemRefs.current[i] = el)}
+                  ref={(el) => {
+                    itemRefs.current[i] = el;
+                  }}
                   className={`cog-menu-item${timeMode === m.key ? " active" : ""}`}
                   role="menuitem"
                   tabIndex={focusIdx === i ? 0 : -1}

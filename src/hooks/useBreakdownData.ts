@@ -1,14 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type {
+  BreakdownMode,
+  HostBreakdown,
+  ProjectBreakdown,
+  SessionBreakdown,
+} from "../types";
+
+type BreakdownRow = HostBreakdown | ProjectBreakdown | SessionBreakdown;
 
 const REFRESH_DEBOUNCE_MS = 1000;
 
-export function useBreakdownData(mode, days) {
-  const [data, setData] = useState([]);
-  const [dataMode, setDataMode] = useState(mode);
+export function useBreakdownData(mode: BreakdownMode, days: number) {
+  const [data, setData] = useState<BreakdownRow[]>([]);
+  const [dataMode, setDataMode] = useState<BreakdownMode>(mode);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
   const currentMode = useRef(mode);
 
   useEffect(() => {
@@ -20,11 +28,15 @@ export function useBreakdownData(mode, days) {
     setError(null);
 
     try {
-      let result;
+      let result: BreakdownRow[];
       if (mode === "hosts") {
-        result = await invoke("get_host_breakdown", { days });
+        result = await invoke<HostBreakdown[]>("get_host_breakdown", { days });
+      } else if (mode === "projects") {
+        result = await invoke<ProjectBreakdown[]>("get_project_breakdown", {
+          days,
+        });
       } else {
-        result = await invoke("get_session_breakdown", {
+        result = await invoke<SessionBreakdown[]>("get_session_breakdown", {
           days,
           hostname: null,
         });
@@ -52,13 +64,13 @@ export function useBreakdownData(mode, days) {
 
   // Auto-refresh when new token data arrives via Tauri event
   useEffect(() => {
-    let timer = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const unlistenPromise = listen("tokens-updated", () => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       timer = setTimeout(fetchData, REFRESH_DEBOUNCE_MS);
     });
     return () => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       unlistenPromise.then((fn) => fn());
     };
   }, [fetchData]);

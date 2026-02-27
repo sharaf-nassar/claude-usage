@@ -11,10 +11,23 @@ import {
   ComposedChart,
 } from "recharts";
 import { formatTokenCount } from "../../utils/tokens";
+import type {
+  DataPoint,
+  TokenDataPoint,
+  RangeType,
+  MergedDataPoint,
+} from "../../types";
 
-function dedupeTickLabels(data, formatter) {
-  const seen = new Set();
-  const allowed = new Set();
+interface TimestampedRecord {
+  timestamp: string;
+}
+
+function dedupeTickLabels(
+  data: TimestampedRecord[],
+  formatter: (v: string) => string,
+): Set<number> {
+  const seen = new Set<string>();
+  const allowed = new Set<number>();
   for (let i = 0; i < data.length; i++) {
     const label = formatter(data[i].timestamp);
     if (!seen.has(label)) {
@@ -25,7 +38,7 @@ function dedupeTickLabels(data, formatter) {
   return allowed;
 }
 
-function formatTime(timestamp, range) {
+function formatTime(timestamp: string, range: RangeType): string {
   const d = new Date(timestamp);
   if (range === "1h") {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -39,7 +52,7 @@ function formatTime(timestamp, range) {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-function getAreaColor(data) {
+function getAreaColor(data: DataPoint[]): string {
   if (!data || data.length === 0) return "#34d399";
   const latest = data[data.length - 1].utilization;
   if (latest >= 80) return "#f87171";
@@ -47,10 +60,21 @@ function getAreaColor(data) {
   return "#34d399";
 }
 
-function CustomTooltip({ active, payload, label }) {
+interface TooltipPayloadEntry {
+  dataKey: string;
+  value: number;
+}
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string;
+}
+
+function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
   if (!active || !payload || payload.length === 0) return null;
 
-  const time = new Date(label);
+  const time = new Date(label!);
   const utilEntry = payload.find((p) => p.dataKey === "utilization");
   const tokenEntry = payload.find((p) => p.dataKey === "total_tokens");
 
@@ -88,7 +112,14 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-function UsageChart({ data, range, bucket, tokenData }) {
+interface UsageChartProps {
+  data: DataPoint[];
+  range: RangeType;
+  bucket: string;
+  tokenData: TokenDataPoint[];
+}
+
+function UsageChart({ data, range, bucket, tokenData }: UsageChartProps) {
   if (!data || data.length === 0) {
     return (
       <div className="chart-empty">No data for {bucket} in this range</div>
@@ -100,9 +131,11 @@ function UsageChart({ data, range, bucket, tokenData }) {
   const hasTokenData = tokenData && tokenData.length > 0;
 
   // Merge usage and token data by timestamp for the composed chart
-  const mergedData = hasTokenData ? mergeDataSeries(data, tokenData) : data;
+  const mergedData: MergedDataPoint[] = hasTokenData
+    ? mergeDataSeries(data, tokenData)
+    : data.map((d) => ({ ...d, total_tokens: null }));
 
-  const formatter = (v) => formatTime(v, range);
+  const formatter = (v: string) => formatTime(v, range);
   const allowedTicks = dedupeTickLabels(mergedData, formatter);
 
   // Compute max token value for right Y-axis
@@ -266,16 +299,12 @@ function UsageChart({ data, range, bucket, tokenData }) {
   );
 }
 
-function mergeDataSeries(usageData, tokenData) {
-  // Build a map of token data by timestamp (rounded to minute)
-  const tokenMap = new Map();
-  for (const t of tokenData) {
-    const key = t.timestamp;
-    tokenMap.set(key, t);
-  }
-
+function mergeDataSeries(
+  usageData: DataPoint[],
+  tokenData: TokenDataPoint[],
+): MergedDataPoint[] {
   // Start with usage data as the base, attach token fields where timestamps align
-  const merged = usageData.map((u) => ({
+  const merged: MergedDataPoint[] = usageData.map((u) => ({
     ...u,
     total_tokens: null,
   }));
@@ -287,7 +316,7 @@ function mergeDataSeries(usageData, tokenData) {
     const usageTime = new Date(point.timestamp).getTime();
 
     // Find the closest token timestamp within a reasonable window
-    let closest = null;
+    let closest: number | null = null;
     let closestDist = Infinity;
     for (let i = 0; i < tokenTimestamps.length; i++) {
       const dist = Math.abs(tokenTimestamps[i] - usageTime);
@@ -319,7 +348,9 @@ function mergeDataSeries(usageData, tokenData) {
   }
 
   // Sort by timestamp
-  merged.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  merged.sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+  );
 
   return merged;
 }

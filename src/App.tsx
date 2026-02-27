@@ -7,9 +7,14 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import TitleBar from "./components/TitleBar";
 import UsageDisplay from "./components/UsageDisplay";
 import AnalyticsView from "./components/analytics/AnalyticsView";
+import type { UsageData, TimeMode, PendingUpdate } from "./types";
 
 const BASE_WIDTH = 260;
-const BASE_HEIGHTS = { marker: 200, dual: 250, background: 200 };
+const BASE_HEIGHTS: Record<TimeMode, number> = {
+  marker: 200,
+  dual: 250,
+  background: 200,
+};
 const TIME_MODE_KEY = "claude-usage-time-mode";
 const SHOW_LIVE_KEY = "claude-usage-show-live";
 const SHOW_ANALYTICS_KEY = "claude-usage-show-analytics";
@@ -19,24 +24,26 @@ const DEFAULT_SPLIT_RATIO = 0.4;
 const MIN_SPLIT = 0.15;
 const MAX_SPLIT = 0.85;
 
-const DEFAULT_SIZES = {
+type LayoutKey = "live" | "analytics" | "both";
+
+const DEFAULT_SIZES: Record<LayoutKey, { width: number; height: number }> = {
   live: { width: 280, height: 340 },
   analytics: { width: 520, height: 560 },
   both: { width: 520, height: 700 },
 };
 
-function layoutKey(live, analytics) {
+function layoutKey(live: boolean, analytics: boolean): LayoutKey | null {
   if (live && analytics) return "both";
   if (live) return "live";
   if (analytics) return "analytics";
   return null;
 }
 
-function loadSize(key) {
+function loadSize(key: LayoutKey): { width: number; height: number } {
   try {
     const stored = localStorage.getItem(SIZE_PREFIX + key);
     if (stored) {
-      const parsed = JSON.parse(stored);
+      const parsed = JSON.parse(stored) as { width: number; height: number };
       if (parsed.width > 0 && parsed.height > 0) return parsed;
     }
   } catch {
@@ -45,7 +52,7 @@ function loadSize(key) {
   return DEFAULT_SIZES[key] ?? DEFAULT_SIZES.live;
 }
 
-function saveSize(key, width, height) {
+function saveSize(key: LayoutKey, width: number, height: number): void {
   try {
     localStorage.setItem(SIZE_PREFIX + key, JSON.stringify({ width, height }));
   } catch {
@@ -53,7 +60,7 @@ function saveSize(key, width, height) {
   }
 }
 
-function loadBool(key, fallback) {
+function loadBool(key: string, fallback: boolean): boolean {
   try {
     const stored = localStorage.getItem(key);
     if (stored === "true") return true;
@@ -64,7 +71,7 @@ function loadBool(key, fallback) {
   return fallback;
 }
 
-function loadSplitRatio() {
+function loadSplitRatio(): number {
   try {
     const stored = localStorage.getItem(SPLIT_RATIO_KEY);
     if (stored) {
@@ -77,7 +84,7 @@ function loadSplitRatio() {
   return DEFAULT_SPLIT_RATIO;
 }
 
-function loadTimeMode() {
+function loadTimeMode(): TimeMode {
   try {
     const stored = localStorage.getItem(TIME_MODE_KEY);
     if (stored === "marker" || stored === "dual" || stored === "background") {
@@ -90,22 +97,22 @@ function loadTimeMode() {
 }
 
 function App() {
-  const [usageData, setUsageData] = useState(null);
+  const [usageData, setUsageData] = useState<UsageData | null>(null);
   const [showMenu, setShowMenu] = useState(false);
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
-  const [timeMode, setTimeMode] = useState(loadTimeMode);
+  const [timeMode, setTimeMode] = useState<TimeMode>(loadTimeMode);
   const [showLive, setShowLive] = useState(() => loadBool(SHOW_LIVE_KEY, true));
   const [showAnalytics, setShowAnalytics] = useState(() =>
     loadBool(SHOW_ANALYTICS_KEY, false),
   );
   const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
-  const liveRef = useRef(null);
-  const panelsRef = useRef(null);
+  const liveRef = useRef<HTMLDivElement>(null);
+  const panelsRef = useRef<HTMLDivElement>(null);
   const splitRatioRef = useRef(splitRatio);
-  const observerRef = useRef(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
   const showLiveRef = useRef(showLive);
   const showAnalyticsRef = useRef(showAnalytics);
-  const currentLayoutRef = useRef(
+  const currentLayoutRef = useRef<LayoutKey | null>(
     layoutKey(
       loadBool(SHOW_LIVE_KEY, true),
       loadBool(SHOW_ANALYTICS_KEY, false),
@@ -128,63 +135,68 @@ function App() {
     await invoke("hide_window");
   }, [saveCurrentSize]);
 
-  const switchLayout = useCallback(async (nextLive, nextAnalytics) => {
-    const prevKey = currentLayoutRef.current;
-    const nextKey = layoutKey(nextLive, nextAnalytics);
+  const switchLayout = useCallback(
+    async (nextLive: boolean, nextAnalytics: boolean) => {
+      const prevKey = currentLayoutRef.current;
+      const nextKey = layoutKey(nextLive, nextAnalytics);
 
-    let currentWidth;
-    if (prevKey) {
+      let currentWidth: number | undefined;
+      if (prevKey) {
+        try {
+          const size = await getCurrentWindow().innerSize();
+          currentWidth = Math.round(size.width);
+          saveSize(prevKey, currentWidth, Math.round(size.height));
+        } catch {
+          /* ignore */
+        }
+      }
+
+      setShowLive(nextLive);
+      setShowAnalytics(nextAnalytics);
+      showLiveRef.current = nextLive;
+      showAnalyticsRef.current = nextAnalytics;
+      currentLayoutRef.current = nextKey;
       try {
-        const size = await getCurrentWindow().innerSize();
-        currentWidth = Math.round(size.width);
-        saveSize(prevKey, currentWidth, Math.round(size.height));
+        localStorage.setItem(SHOW_LIVE_KEY, String(nextLive));
       } catch {
         /* ignore */
       }
-    }
-
-    setShowLive(nextLive);
-    setShowAnalytics(nextAnalytics);
-    showLiveRef.current = nextLive;
-    showAnalyticsRef.current = nextAnalytics;
-    currentLayoutRef.current = nextKey;
-    try {
-      localStorage.setItem(SHOW_LIVE_KEY, String(nextLive));
-    } catch {
-      /* ignore */
-    }
-    try {
-      localStorage.setItem(SHOW_ANALYTICS_KEY, String(nextAnalytics));
-    } catch {
-      /* ignore */
-    }
-
-    if (nextKey) {
-      const saved = loadSize(nextKey);
-      const width = currentWidth ?? saved.width;
       try {
-        await getCurrentWindow().setSize(new LogicalSize(width, saved.height));
+        localStorage.setItem(SHOW_ANALYTICS_KEY, String(nextAnalytics));
       } catch {
         /* ignore */
       }
-    }
-  }, []);
+
+      if (nextKey) {
+        const saved = loadSize(nextKey);
+        const width = currentWidth ?? saved.width;
+        try {
+          await getCurrentWindow().setSize(
+            new LogicalSize(width, saved.height),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+    [],
+  );
 
   const handleToggleLive = useCallback(
-    (on) => {
+    (on: boolean) => {
       switchLayout(on, showAnalyticsRef.current);
     },
     [switchLayout],
   );
 
   const handleToggleAnalytics = useCallback(
-    (on) => {
+    (on: boolean) => {
       switchLayout(showLiveRef.current, on);
     },
     [switchLayout],
   );
 
-  const handleTimeModeChange = (mode) => {
+  const handleTimeModeChange = (mode: TimeMode) => {
     setTimeMode(mode);
     try {
       localStorage.setItem(TIME_MODE_KEY, mode);
@@ -195,88 +207,95 @@ function App() {
 
   const isSplit = showLive && showAnalytics;
 
-  const handleDividerMouseDown = useCallback((e) => {
-    e.preventDefault();
-    const liveEl = liveRef.current;
-    const panelsEl = panelsRef.current;
-    if (!liveEl || !panelsEl) return;
+  const handleDividerMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const liveEl = liveRef.current;
+      const panelsEl = panelsRef.current;
+      if (!liveEl || !panelsEl) return;
 
-    // Freeze inner content at current pixel sizes so children skip layout
-    const liveInner = liveEl.querySelector(".usage-display");
-    const analyticsInner = panelsEl.querySelector(".analytics-view");
-    if (liveInner) {
-      liveInner.style.height = `${liveInner.offsetHeight}px`;
-      liveInner.style.overflow = "hidden";
-      liveInner.style.flex = "none";
-    }
-    if (analyticsInner) {
-      analyticsInner.style.height = `${analyticsInner.offsetHeight}px`;
-      analyticsInner.style.overflow = "hidden";
-      analyticsInner.style.flex = "none";
-    }
-
-    // Pause the live panel's ResizeObserver (stops --s cascade)
-    observerRef.current?.disconnect();
-
-    // Add drag classes directly on DOM — no React re-renders
-    document.documentElement.classList.add("dragging-divider");
-    e.currentTarget.classList.add("active");
-
-    let rafId = 0;
-
-    const onMouseMove = (ev) => {
-      cancelAnimationFrame(rafId);
-      const clientY = ev.clientY;
-      rafId = requestAnimationFrame(() => {
-        const rect = panelsEl.getBoundingClientRect();
-        const ratio = Math.max(
-          MIN_SPLIT,
-          Math.min(MAX_SPLIT, (clientY - rect.top) / rect.height),
-        );
-        splitRatioRef.current = ratio;
-        liveEl.style.flex = `0 0 ${ratio * 100}%`;
-      });
-    };
-
-    const onMouseUp = () => {
-      cancelAnimationFrame(rafId);
-      document.documentElement.classList.remove("dragging-divider");
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-
-      // Unfreeze inner content — let flex/auto sizing resume
+      // Freeze inner content at current pixel sizes so children skip layout
+      const liveInner = liveEl.querySelector(
+        ".usage-display",
+      ) as HTMLElement | null;
+      const analyticsInner = panelsEl.querySelector(
+        ".analytics-view",
+      ) as HTMLElement | null;
       if (liveInner) {
-        liveInner.style.height = "";
-        liveInner.style.overflow = "";
-        liveInner.style.flex = "";
+        liveInner.style.height = `${liveInner.offsetHeight}px`;
+        liveInner.style.overflow = "hidden";
+        liveInner.style.flex = "none";
       }
       if (analyticsInner) {
-        analyticsInner.style.height = "";
-        analyticsInner.style.overflow = "";
-        analyticsInner.style.flex = "";
+        analyticsInner.style.height = `${analyticsInner.offsetHeight}px`;
+        analyticsInner.style.overflow = "hidden";
+        analyticsInner.style.flex = "none";
       }
 
-      // Reconnect observer — fires once with final size for --s update
-      if (observerRef.current && liveRef.current) {
-        observerRef.current.observe(liveRef.current);
-      }
+      // Pause the live panel's ResizeObserver (stops --s cascade)
+      observerRef.current?.disconnect();
 
-      // Sync final ratio into React state once
-      setSplitRatio(splitRatioRef.current);
-      try {
-        localStorage.setItem(SPLIT_RATIO_KEY, String(splitRatioRef.current));
-      } catch {
-        /* ignore */
-      }
-    };
+      // Add drag classes directly on DOM — no React re-renders
+      document.documentElement.classList.add("dragging-divider");
+      (e.currentTarget as HTMLElement).classList.add("active");
 
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, []);
+      let rafId = 0;
+
+      const onMouseMove = (ev: MouseEvent) => {
+        cancelAnimationFrame(rafId);
+        const clientY = ev.clientY;
+        rafId = requestAnimationFrame(() => {
+          const rect = panelsEl.getBoundingClientRect();
+          const ratio = Math.max(
+            MIN_SPLIT,
+            Math.min(MAX_SPLIT, (clientY - rect.top) / rect.height),
+          );
+          splitRatioRef.current = ratio;
+          liveEl.style.flex = `0 0 ${ratio * 100}%`;
+        });
+      };
+
+      const onMouseUp = () => {
+        cancelAnimationFrame(rafId);
+        document.documentElement.classList.remove("dragging-divider");
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+
+        // Unfreeze inner content — let flex/auto sizing resume
+        if (liveInner) {
+          liveInner.style.height = "";
+          liveInner.style.overflow = "";
+          liveInner.style.flex = "";
+        }
+        if (analyticsInner) {
+          analyticsInner.style.height = "";
+          analyticsInner.style.overflow = "";
+          analyticsInner.style.flex = "";
+        }
+
+        // Reconnect observer — fires once with final size for --s update
+        if (observerRef.current && liveRef.current) {
+          observerRef.current.observe(liveRef.current);
+        }
+
+        // Sync final ratio into React state once
+        setSplitRatio(splitRatioRef.current);
+        try {
+          localStorage.setItem(SPLIT_RATIO_KEY, String(splitRatioRef.current));
+        } catch {
+          /* ignore */
+        }
+      };
+
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     try {
-      const data = await invoke("fetch_usage_data");
+      const data = await invoke<UsageData>("fetch_usage_data");
       setUsageData(data);
     } catch (e) {
       console.error("Usage data fetch error:", e);
@@ -291,7 +310,9 @@ function App() {
   }, [refresh]);
 
   // Check for app updates on startup and every 4 hours
-  const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(
+    null,
+  );
   const [updating, setUpdating] = useState(false);
 
   const checkForUpdate = useCallback(() => {
@@ -359,7 +380,7 @@ function App() {
           Math.round(Math.max(0.6, Math.min(wScale, hScale, 2.5)) * 100) / 100;
         if (scale !== lastScale) {
           lastScale = scale;
-          el.style.setProperty("--s", scale);
+          el.style.setProperty("--s", String(scale));
         }
       });
     };
@@ -375,7 +396,7 @@ function App() {
     };
   }, [timeMode, showLive]);
 
-  const handleContextMenu = (e) => {
+  const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     const menuWidth = 100;
     const menuHeight = 70;

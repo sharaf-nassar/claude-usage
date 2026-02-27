@@ -2,8 +2,15 @@ import { useState, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useBreakdownData } from "../../hooks/useBreakdownData";
 import { formatTokenCount } from "../../utils/tokens";
+import type {
+  BreakdownMode,
+  BreakdownSelection,
+  HostBreakdown,
+  ProjectBreakdown,
+  SessionBreakdown,
+} from "../../types";
 
-function formatRelativeTime(isoString) {
+function formatRelativeTime(isoString: string): string {
   const now = Date.now();
   const then = new Date(isoString).getTime();
   const diffMs = now - then;
@@ -16,18 +23,26 @@ function formatRelativeTime(isoString) {
   return `${diffDays}d ago`;
 }
 
-function projectName(path) {
+function projectName(path: string | null | undefined): string | null {
   if (!path) return null;
   const segments = path.split("/").filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : null;
 }
 
-const MODES = ["hosts", "sessions"];
-const MODE_LABELS = { hosts: "Hosts", sessions: "Sessions" };
+const MODES: BreakdownMode[] = ["hosts", "projects", "sessions"];
+const MODE_LABELS: Record<BreakdownMode, string> = {
+  hosts: "Hosts",
+  projects: "Projects",
+  sessions: "Sessions",
+};
 const PAGE_SIZE = 5;
 const CONFIRM_TIMEOUT_MS = 3000;
 
-function TrashIcon({ size = 12 }) {
+interface TrashIconProps {
+  size?: number;
+}
+
+function TrashIcon({ size = 12 }: TrashIconProps) {
   return (
     <svg
       width={size}
@@ -48,12 +63,18 @@ function TrashIcon({ size = 12 }) {
   );
 }
 
-function BreakdownPanel({ days, selection, onSelect }) {
-  const [mode, setMode] = useState("hosts");
+interface BreakdownPanelProps {
+  days: number;
+  selection: BreakdownSelection | null;
+  onSelect: (selection: BreakdownSelection | null) => void;
+}
+
+function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
+  const [mode, setMode] = useState<BreakdownMode>("hosts");
   const [page, setPage] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const confirmTimer = useRef(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { data, loading, error, refresh } = useBreakdownData(mode, days);
 
   const totalPages = Math.max(1, Math.ceil(data.length / PAGE_SIZE));
@@ -63,13 +84,17 @@ function BreakdownPanel({ days, selection, onSelect }) {
     [data, currentPage],
   );
 
-  const handleModeChange = (m) => {
+  const handleModeChange = (m: BreakdownMode) => {
     setMode(m);
     setPage(0);
     resetConfirm();
   };
 
-  const handleRowClick = (type, key, row) => {
+  const handleRowClick = (
+    type: BreakdownSelection["type"],
+    key: string,
+    row: { first_seen?: string; last_active: string },
+  ) => {
     resetConfirm();
     if (selection?.type === type && selection?.key === key) {
       onSelect(null);
@@ -83,7 +108,7 @@ function BreakdownPanel({ days, selection, onSelect }) {
     }
   };
 
-  const isSelected = (type, key) =>
+  const isSelected = (type: BreakdownSelection["type"], key: string) =>
     selection?.type === type && selection?.key === key;
 
   const resetConfirm = useCallback(() => {
@@ -109,12 +134,21 @@ function BreakdownPanel({ days, selection, onSelect }) {
     resetConfirm();
     setDeleting(true);
 
-    const command =
-      selection.type === "host" ? "delete_host_data" : "delete_session_data";
-    const args =
-      selection.type === "host"
-        ? { hostname: selection.key }
-        : { sessionId: selection.key };
+    const commandMap: Record<BreakdownSelection["type"], string> = {
+      host: "delete_host_data",
+      project: "delete_project_data",
+      session: "delete_session_data",
+    };
+    const argsMap: Record<
+      BreakdownSelection["type"],
+      Record<string, string>
+    > = {
+      host: { hostname: selection.key },
+      project: { cwd: selection.key },
+      session: { sessionId: selection.key },
+    };
+    const command = commandMap[selection.type];
+    const args = argsMap[selection.type];
 
     await invoke(command, args);
     onSelect(null);
@@ -213,7 +247,7 @@ function BreakdownPanel({ days, selection, onSelect }) {
           aria-label={`${MODE_LABELS[mode]} breakdown`}
         >
           {mode === "hosts"
-            ? pageData.map((row) => (
+            ? (pageData as HostBreakdown[]).map((row) => (
                 <div
                   key={row.hostname}
                   className={`breakdown-row${isSelected("host", row.hostname) ? " selected" : ""}`}
@@ -242,46 +276,80 @@ function BreakdownPanel({ days, selection, onSelect }) {
                   </span>
                 </div>
               ))
-            : pageData.map((row) => (
-                <div
-                  key={row.session_id}
-                  className={`breakdown-row breakdown-row-session${isSelected("session", row.session_id) ? " selected" : ""}`}
-                  role="listitem"
-                  tabIndex={0}
-                  aria-label={`Session ${row.session_id.slice(0, 8)}${projectName(row.project) ? ` in ${projectName(row.project)}` : ""} on ${row.hostname}: ${formatTokenCount(row.total_tokens)} tokens, ${row.turn_count} turns`}
-                  onClick={() =>
-                    handleRowClick("session", row.session_id, row)
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      handleRowClick("session", row.session_id, row);
-                    }
-                  }}
-                >
-                  <span className="breakdown-name" title={row.session_id}>
-                    {row.session_id.slice(0, 8)}
-                    {projectName(row.project) && (
-                      <span
-                        className="breakdown-project-tag"
-                        title={row.project}
-                      >
-                        {projectName(row.project)}
+            : mode === "projects"
+              ? (pageData as ProjectBreakdown[]).map((row) => (
+                  <div
+                    key={`${row.project}::${row.hostname}`}
+                    className={`breakdown-row breakdown-row-project${isSelected("project", row.project) ? " selected" : ""}`}
+                    role="listitem"
+                    tabIndex={0}
+                    aria-label={`${projectName(row.project)} on ${row.hostname}: ${formatTokenCount(row.total_tokens)} tokens, ${row.turn_count} turns, ${row.session_count} sessions`}
+                    onClick={() => handleRowClick("project", row.project, row)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleRowClick("project", row.project, row);
+                      }
+                    }}
+                  >
+                    <span className="breakdown-name" title={row.project}>
+                      {projectName(row.project)}
+                      <span className="breakdown-host-tag">{row.hostname}</span>
+                    </span>
+                    <span className="breakdown-tokens">
+                      {formatTokenCount(row.total_tokens)}
+                    </span>
+                    <span className="breakdown-turns">
+                      {row.turn_count} turns
+                      <span className="breakdown-session-count">
+                        {row.session_count} sess
                       </span>
-                    )}
-                    <span className="breakdown-host-tag">{row.hostname}</span>
-                  </span>
-                  <span className="breakdown-tokens">
-                    {formatTokenCount(row.total_tokens)}
-                  </span>
-                  <span className="breakdown-turns">
-                    {row.turn_count} turns
-                  </span>
-                  <span className="breakdown-time">
-                    {formatRelativeTime(row.last_active)}
-                  </span>
-                </div>
-              ))}
+                    </span>
+                    <span className="breakdown-time">
+                      {formatRelativeTime(row.last_active)}
+                    </span>
+                  </div>
+                ))
+              : (pageData as SessionBreakdown[]).map((row) => (
+                  <div
+                    key={row.session_id}
+                    className={`breakdown-row breakdown-row-session${isSelected("session", row.session_id) ? " selected" : ""}`}
+                    role="listitem"
+                    tabIndex={0}
+                    aria-label={`Session ${row.session_id.slice(0, 8)}${projectName(row.project) ? ` in ${projectName(row.project)}` : ""} on ${row.hostname}: ${formatTokenCount(row.total_tokens)} tokens, ${row.turn_count} turns`}
+                    onClick={() =>
+                      handleRowClick("session", row.session_id, row)
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleRowClick("session", row.session_id, row);
+                      }
+                    }}
+                  >
+                    <span className="breakdown-name" title={row.session_id}>
+                      {row.session_id.slice(0, 8)}
+                      {projectName(row.project) && (
+                        <span
+                          className="breakdown-project-tag"
+                          title={row.project ?? undefined}
+                        >
+                          {projectName(row.project)}
+                        </span>
+                      )}
+                      <span className="breakdown-host-tag">{row.hostname}</span>
+                    </span>
+                    <span className="breakdown-tokens">
+                      {formatTokenCount(row.total_tokens)}
+                    </span>
+                    <span className="breakdown-turns">
+                      {row.turn_count} turns
+                    </span>
+                    <span className="breakdown-time">
+                      {formatRelativeTime(row.last_active)}
+                    </span>
+                  </div>
+                ))}
         </div>
       )}
     </div>

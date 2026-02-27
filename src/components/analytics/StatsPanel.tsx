@@ -1,6 +1,16 @@
+import type { ReactNode } from "react";
+import type { BucketStats } from "../../types";
 import { getColor, TrendArrow } from "./shared";
 
-function StatCard({ label, value, suffix, color, subtext }) {
+interface StatCardProps {
+  label: string;
+  value: ReactNode;
+  suffix?: string;
+  color?: string;
+  subtext?: string;
+}
+
+function StatCard({ label, value, suffix, color, subtext }: StatCardProps) {
   return (
     <div className="stat-card">
       <div className="stat-label">{label}</div>
@@ -13,7 +23,11 @@ function StatCard({ label, value, suffix, color, subtext }) {
   );
 }
 
-function StatsPanel({ stats }) {
+interface StatsPanelProps {
+  stats: BucketStats | null;
+}
+
+function StatsPanel({ stats }: StatsPanelProps) {
   if (!stats) {
     return <div className="stats-panel stats-empty">No statistics available</div>;
   }

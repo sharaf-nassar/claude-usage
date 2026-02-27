@@ -1,20 +1,30 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type {
+  RangeType,
+  DataPoint,
+  BucketStats,
+  UsageBucket,
+} from "../types";
 
-const RANGES = {
+const RANGES: Record<RangeType, { label: string; days: number }> = {
   "1h": { label: "1 Hour", days: 1 },
   "24h": { label: "24 Hours", days: 1 },
   "7d": { label: "7 Days", days: 7 },
   "30d": { label: "30 Days", days: 30 },
 };
 
-export function useAnalyticsData(bucket, range, currentBuckets) {
-  const [history, setHistory] = useState([]);
-  const [stats, setStats] = useState(null);
-  const [allStats, setAllStats] = useState([]);
+export function useAnalyticsData(
+  bucket: string,
+  range: RangeType,
+  currentBuckets: UsageBucket[] | undefined,
+) {
+  const [history, setHistory] = useState<DataPoint[]>([]);
+  const [stats, setStats] = useState<BucketStats | null>(null);
+  const [allStats, setAllStats] = useState<BucketStats[]>([]);
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
   const bucketsRef = useRef(currentBuckets);
   bucketsRef.current = currentBuckets;
@@ -29,8 +39,8 @@ export function useAnalyticsData(bucket, range, currentBuckets) {
       const buckets = bucketsRef.current;
 
       const [historyData, countData] = await Promise.all([
-        invoke("get_usage_history", { bucket, range }),
-        invoke("get_snapshot_count"),
+        invoke<DataPoint[]>("get_usage_history", { bucket, range }),
+        invoke<number>("get_snapshot_count"),
       ]);
 
       setHistory(historyData);
@@ -46,8 +56,8 @@ export function useAnalyticsData(bucket, range, currentBuckets) {
         );
 
         const [statsData, allStatsData] = await Promise.all([
-          invoke("get_usage_stats", { bucket, days }),
-          invoke("get_all_bucket_stats", { bucketsJson, days }),
+          invoke<BucketStats>("get_usage_stats", { bucket, days }),
+          invoke<BucketStats[]>("get_all_bucket_stats", { bucketsJson, days }),
         ]);
 
         const currentBucket = buckets.find((b) => b.label === bucket);

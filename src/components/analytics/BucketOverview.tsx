@@ -2,13 +2,23 @@ import { LineChart, Line, YAxis, ResponsiveContainer } from "recharts";
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getColor, TrendArrow } from "./shared";
+import type { BucketStats, DataPoint } from "../../types";
 
-function SparklineRow({ stat, onClick, isActive }) {
-  const [sparkData, setSparkData] = useState([]);
+interface SparklineRowProps {
+  stat: BucketStats;
+  onClick: (label: string) => void;
+  isActive: boolean;
+}
+
+function SparklineRow({ stat, onClick, isActive }: SparklineRowProps) {
+  const [sparkData, setSparkData] = useState<DataPoint[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    invoke("get_usage_history", { bucket: stat.label, range: "24h" })
+    invoke<DataPoint[]>("get_usage_history", {
+      bucket: stat.label,
+      range: "24h",
+    })
       .then((data) => {
         if (!cancelled) {
           const sampled =
@@ -66,7 +76,17 @@ function SparklineRow({ stat, onClick, isActive }) {
   );
 }
 
-function BucketOverview({ allStats, activeBucket, onBucketSelect }) {
+interface BucketOverviewProps {
+  allStats: BucketStats[];
+  activeBucket: string;
+  onBucketSelect: (label: string) => void;
+}
+
+function BucketOverview({
+  allStats,
+  activeBucket,
+  onBucketSelect,
+}: BucketOverviewProps) {
   if (!allStats || allStats.length === 0) {
     return <div className="bucket-overview-empty">No bucket data</div>;
   }
