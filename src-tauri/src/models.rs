@@ -77,6 +77,17 @@ pub struct SessionBreakdown {
     pub project: Option<String>,
 }
 
+// Project-level token breakdown (grouped by cwd + hostname)
+#[derive(Serialize, Clone, Debug)]
+pub struct ProjectBreakdown {
+    pub project: String,
+    pub hostname: String,
+    pub total_tokens: i64,
+    pub turn_count: i64,
+    pub session_count: i64,
+    pub last_active: String,
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct BucketStats {
     pub label: String,

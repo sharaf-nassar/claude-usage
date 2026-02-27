@@ -6,14 +6,16 @@ mod server;
 mod storage;
 
 use models::{
-    BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenStats, UsageData,
+    BucketStats, DataPoint, HostBreakdown, ProjectBreakdown, SessionBreakdown, TokenDataPoint,
+    TokenStats, UsageData,
 };
 use rand::RngCore;
 use std::sync::{Mutex, OnceLock};
 use storage::Storage;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, PhysicalPosition};
+use tauri_plugin_updater::UpdaterExt;
 
 static STORAGE: OnceLock<Storage> = OnceLock::new();
 static LAST_POSITION: Mutex<Option<PhysicalPosition<i32>>> = Mutex::new(None);
@@ -27,6 +29,49 @@ fn show_main_window(app: &tauri::AppHandle) {
             let _ = w.set_position(pos);
         }
         let _ = w.set_focus();
+    }
+}
+
+async fn check_for_update(app: &tauri::AppHandle) {
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("Failed to create updater: {e}");
+            return;
+        }
+    };
+
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let version = update.version.clone();
+            println!("Update available: {version}");
+            let mut downloaded = 0u64;
+            match update
+                .download_and_install(
+                    |chunk_length, _content_length| {
+                        downloaded += chunk_length as u64;
+                    },
+                    || {
+                        println!("Download finished");
+                    },
+                )
+                .await
+            {
+                Ok(()) => {
+                    println!("Update {version} installed, restarting...");
+                    app.restart();
+                }
+                Err(e) => {
+                    eprintln!("Failed to install update: {e}");
+                }
+            }
+        }
+        Ok(None) => {
+            println!("No update available");
+        }
+        Err(e) => {
+            eprintln!("Update check failed: {e}");
+        }
     }
 }
 
@@ -82,15 +127,25 @@ async fn get_token_history(
     range: String,
     hostname: Option<String>,
     session_id: Option<String>,
+    cwd: Option<String>,
 ) -> Result<Vec<TokenDataPoint>, String> {
     let storage = get_storage()?;
-    storage.get_token_history(&range, hostname.as_deref(), session_id.as_deref())
+    storage.get_token_history(
+        &range,
+        hostname.as_deref(),
+        session_id.as_deref(),
+        cwd.as_deref(),
+    )
 }
 
 #[tauri::command]
-async fn get_token_stats(days: i32, hostname: Option<String>) -> Result<TokenStats, String> {
+async fn get_token_stats(
+    days: i32,
+    hostname: Option<String>,
+    cwd: Option<String>,
+) -> Result<TokenStats, String> {
     let storage = get_storage()?;
-    storage.get_token_stats(days, hostname.as_deref())
+    storage.get_token_stats(days, hostname.as_deref(), cwd.as_deref())
 }
 
 #[tauri::command]
@@ -112,6 +167,18 @@ async fn get_session_breakdown(
 ) -> Result<Vec<SessionBreakdown>, String> {
     let storage = get_storage()?;
     storage.get_session_breakdown(days, hostname.as_deref())
+}
+
+#[tauri::command]
+async fn get_project_breakdown(days: i32) -> Result<Vec<ProjectBreakdown>, String> {
+    let storage = get_storage()?;
+    storage.get_project_breakdown(days)
+}
+
+#[tauri::command]
+async fn delete_project_data(cwd: String) -> Result<u64, String> {
+    let storage = get_storage()?;
+    storage.delete_project_data(&cwd)
 }
 
 #[tauri::command]
@@ -194,8 +261,11 @@ pub fn run() {
                 on_top_enabled,
                 None::<&str>,
             )?;
+            let separator = PredefinedMenuItem::separator(app)?;
+            let update =
+                MenuItem::with_id(app, "check_update", "Check for Update", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &on_top, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &on_top, &separator, &update, &quit])?;
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -217,6 +287,12 @@ pub fn run() {
                                 );
                             }
                         }
+                    }
+                    "check_update" => {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            check_for_update(&app).await;
+                        });
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -244,8 +320,10 @@ pub fn run() {
             get_token_stats,
             get_token_hostnames,
             get_host_breakdown,
+            get_project_breakdown,
             get_session_breakdown,
             delete_host_data,
+            delete_project_data,
             delete_session_data,
             hide_window,
             quit_app,

@@ -5,8 +5,8 @@ use chrono::{Duration, Utc};
 use rusqlite::{Connection, params};
 
 use crate::models::{
-    BucketStats, DataPoint, HostBreakdown, SessionBreakdown, TokenDataPoint, TokenReportPayload,
-    TokenStats, UsageBucket,
+    BucketStats, DataPoint, HostBreakdown, ProjectBreakdown, SessionBreakdown, TokenDataPoint,
+    TokenReportPayload, TokenStats, UsageBucket,
 };
 
 fn db_path() -> Result<PathBuf, String> {
@@ -386,18 +386,20 @@ impl Storage {
         range: &str,
         hostname: Option<&str>,
         session_id: Option<&str>,
+        cwd: Option<&str>,
     ) -> Result<Vec<TokenDataPoint>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let now = Utc::now();
 
+        // Skip hourly aggregates when filtering by session_id or cwd since
+        // token_hourly doesn't store those fields
+        let needs_granular = session_id.is_some() || cwd.is_some();
         let (from, use_hourly) = match range {
             "1h" => (now - Duration::hours(1), false),
             "24h" => (now - Duration::hours(24), false),
             "7d" => (now - Duration::days(7), false),
-            // Skip hourly aggregates when filtering by session_id since
-            // token_hourly doesn't store session_id
-            "30d" => (now - Duration::days(30), session_id.is_none()),
-            "all" => (now - Duration::days(365), session_id.is_none()),
+            "30d" => (now - Duration::days(30), !needs_granular),
+            "all" => (now - Duration::days(365), !needs_granular),
             _ => (now - Duration::hours(24), false),
         };
 
@@ -469,6 +471,14 @@ impl Storage {
                      ORDER BY timestamp ASC".to_string(),
                     vec![Box::new(from_str.clone()), Box::new(sid.to_string())],
                 )
+        } else if let Some(project) = cwd {
+            (
+                    "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND cwd = ?2
+                     ORDER BY timestamp ASC".to_string(),
+                    vec![Box::new(from_str.clone()), Box::new(project.to_string())],
+                )
         } else if let Some(host) = hostname {
             (
                     "SELECT timestamp, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens
@@ -525,12 +535,30 @@ impl Storage {
         Ok(downsample_tokens(points, max_points))
     }
 
-    pub fn get_token_stats(&self, days: i32, hostname: Option<&str>) -> Result<TokenStats, String> {
+    pub fn get_token_stats(
+        &self,
+        days: i32,
+        hostname: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<TokenStats, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
         let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
 
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            if let Some(host) = hostname {
+            if let Some(project) = cwd {
+                (
+                    "SELECT
+                         COALESCE(SUM(input_tokens), 0),
+                         COALESCE(SUM(output_tokens), 0),
+                         COALESCE(SUM(cache_creation_input_tokens), 0),
+                         COALESCE(SUM(cache_read_input_tokens), 0),
+                         COUNT(*)
+                     FROM token_snapshots
+                     WHERE timestamp >= ?1 AND cwd = ?2"
+                        .to_string(),
+                    vec![Box::new(from), Box::new(project.to_string())],
+                )
+            } else if let Some(host) = hostname {
                 (
                     "SELECT
                          COALESCE(SUM(input_tokens), 0),
@@ -638,6 +666,47 @@ impl Storage {
                     total_tokens: row.get(1)?,
                     turn_count: row.get(2)?,
                     last_active: row.get(3)?,
+                })
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_project_breakdown(&self, days: i32) -> Result<Vec<ProjectBreakdown>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT
+                     cwd,
+                     hostname,
+                     SUM(input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens) as total_tokens,
+                     COUNT(*) as turn_count,
+                     COUNT(DISTINCT session_id) as session_count,
+                     MAX(timestamp) as last_active
+                 FROM token_snapshots
+                 WHERE timestamp >= ?1 AND cwd IS NOT NULL
+                 GROUP BY cwd, hostname
+                 ORDER BY total_tokens DESC
+                 LIMIT 50",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map(params![from], |row| {
+                Ok(ProjectBreakdown {
+                    project: row.get(0)?,
+                    hostname: row.get(1)?,
+                    total_tokens: row.get(2)?,
+                    turn_count: row.get(3)?,
+                    session_count: row.get(4)?,
+                    last_active: row.get(5)?,
                 })
             })
             .map_err(|e| format!("Query error: {e}"))?;
@@ -774,6 +843,16 @@ impl Storage {
                 "DELETE FROM token_snapshots WHERE session_id = ?1",
                 params![session_id],
             )
+            .map_err(|e| format!("Delete error: {e}"))?;
+
+        Ok(count as u64)
+    }
+
+    pub fn delete_project_data(&self, cwd: &str) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+
+        let count = conn
+            .execute("DELETE FROM token_snapshots WHERE cwd = ?1", params![cwd])
             .map_err(|e| format!("Delete error: {e}"))?;
 
         Ok(count as u64)

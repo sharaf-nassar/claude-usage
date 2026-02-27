@@ -1107,6 +1107,12 @@ html.dragging-divider .panels--split > :not(.panel-divider) {
   font-weight: 400;
 }
 
+.breakdown-session-count {
+  margin-left: 6px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 9px;
+}
+
 .breakdown-delete-btn {
   background: none;
   border: 1px solid transparent;
