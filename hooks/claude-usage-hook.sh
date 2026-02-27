@@ -80,6 +80,14 @@ data = json.load(sys.stdin)
 print(data.get('cwd') or '')
 " 2>/dev/null || true)
 
+# Resolve to git repository root so subdirectories are grouped under one project
+if [ -n "$CWD" ] && [ -d "$CWD" ]; then
+    GIT_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -n "$GIT_ROOT" ]; then
+        CWD="$GIT_ROOT"
+    fi
+fi
+
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
     exit 0
 fi

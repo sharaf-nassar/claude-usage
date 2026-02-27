@@ -1,6 +1,7 @@
 {
   "name": "claude-usage-hook",
   "description": "Reports per-turn token usage to the Claude Usage desktop widget. After installing, run /claude-usage-hook:setup to configure the widget address.",
+  "version": "1.4.1",
   "author": {
     "name": "Sharaf Nassar",
     "url": "https://github.com/sharaf-nassar"
