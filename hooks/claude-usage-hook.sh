@@ -150,19 +150,15 @@ if [ -z "$PAYLOAD" ]; then
 fi
 
 # POST to the widget server (fire-and-forget, 2s timeout)
-if [ -n "$SECRET" ]; then
-    curl -s -m 2 \
-        -X POST \
-        -H 'Content-Type: application/json' \
-        -H "Authorization: Bearer $SECRET" \
-        -d "$PAYLOAD" \
-        "${USAGE_URL}/api/v1/tokens" \
-        >/dev/null 2>&1 || true
-else
-    curl -s -m 2 \
-        -X POST \
-        -H 'Content-Type: application/json' \
-        -d "$PAYLOAD" \
-        "${USAGE_URL}/api/v1/tokens" \
-        >/dev/null 2>&1 || true
+# Skip if no secret is configured — the server requires auth
+if [ -z "$SECRET" ]; then
+    exit 0
 fi
+
+curl -s -m 2 \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $SECRET" \
+    -d "$PAYLOAD" \
+    "${USAGE_URL}/api/v1/tokens" \
+    >/dev/null 2>&1 || true

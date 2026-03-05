@@ -5,8 +5,10 @@ import type { PendingUpdate } from "../types";
 interface TitleBarProps {
   showLive: boolean;
   showAnalytics: boolean;
+  showLearning: boolean;
   onToggleLive: (on: boolean) => void;
   onToggleAnalytics: (on: boolean) => void;
+  onToggleLearning: () => void;
   onClose: () => void;
   pendingUpdate: PendingUpdate | null;
   updating: boolean;
@@ -16,8 +18,10 @@ interface TitleBarProps {
 function TitleBar({
   showLive,
   showAnalytics,
+  showLearning,
   onToggleLive,
   onToggleAnalytics,
+  onToggleLearning,
   onClose,
   pendingUpdate,
   updating,
@@ -47,6 +51,12 @@ function TitleBar({
           >
             Analytics
           </button>
+          <button
+            className={`view-tab view-tab--learning${showLearning ? " active" : ""}`}
+            onClick={onToggleLearning}
+          >
+            &#10022;
+          </button>
         </div>
       </div>
       {pendingUpdate ? (
@@ -56,7 +66,7 @@ function TitleBar({
           disabled={updating}
           aria-label={`Update to version ${pendingUpdate.version}`}
         >
-          {updating ? "Updating..." : `Update ${pendingUpdate.version}`}
+          {updating ? "Updating\u2026" : `Update ${pendingUpdate.version}`}
         </button>
       ) : (
         <span className="titlebar-text" data-tauri-drag-region>

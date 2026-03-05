@@ -99,3 +99,132 @@ pub struct BucketStats {
     pub trend: String,
     pub sample_count: i64,
 }
+
+// --- Learning system models ---
+
+// Payload received from observation hook scripts via HTTP API
+#[derive(Deserialize, Clone, Debug)]
+pub struct ObservationPayload {
+    pub session_id: String,
+    pub hook_phase: String,
+    pub tool_name: String,
+    #[serde(default)]
+    pub tool_input: Option<String>,
+    #[serde(default)]
+    pub tool_output: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+// Payload from session-end hook
+#[derive(Deserialize, Clone, Debug)]
+pub struct SessionEndPayload {
+    pub session_id: String,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+// Payload to record a learning run result
+#[derive(Deserialize, Clone, Debug)]
+pub struct LearningRunPayload {
+    pub trigger_mode: String,
+    pub observations_analyzed: i64,
+    pub rules_created: i64,
+    #[serde(default)]
+    pub rules_updated: i64,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+// Payload to record learned rule metadata from /learn skill
+#[derive(Deserialize, Clone, Debug)]
+pub struct LearnedRulePayload {
+    pub name: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default = "default_confidence")]
+    pub confidence: f64,
+    #[serde(default)]
+    pub observation_count: i64,
+    pub file_path: String,
+}
+
+fn default_confidence() -> f64 {
+    0.5
+}
+
+// Learning run record returned to frontend/API
+#[derive(Serialize, Clone, Debug)]
+pub struct LearningRun {
+    pub id: i64,
+    pub trigger_mode: String,
+    pub observations_analyzed: i64,
+    pub rules_created: i64,
+    pub rules_updated: i64,
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+// Learned rule record returned to frontend
+#[derive(Serialize, Clone, Debug)]
+pub struct LearnedRule {
+    pub name: String,
+    pub domain: Option<String>,
+    pub confidence: f64,
+    pub observation_count: i64,
+    pub file_path: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// Tool frequency count for status strip
+#[derive(Serialize, Clone, Debug)]
+pub struct ToolCount {
+    pub tool_name: String,
+    pub count: i64,
+}
+
+// Learning settings
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LearningSettings {
+    pub enabled: bool,
+    pub trigger_mode: String,
+    pub periodic_minutes: i64,
+    pub min_observations: i64,
+}
+
+impl Default for LearningSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            trigger_mode: "on-demand".to_string(),
+            periodic_minutes: 180,
+            min_observations: 50,
+        }
+    }
+}
+
+// Learning status for GET /api/v1/learning/status
+#[derive(Serialize, Clone, Debug)]
+pub struct LearningStatus {
+    pub observation_count: i64,
+    pub unanalyzed_count: i64,
+    pub rules_count: i64,
+    pub last_run: Option<LearningRun>,
+}
+
+// Haiku analysis output item (parsed from JSON)
+#[derive(Deserialize, Clone, Debug)]
+pub struct AnalysisRule {
+    pub name: String,
+    pub domain: String,
+    pub confidence: f64,
+    pub content: String,
+}

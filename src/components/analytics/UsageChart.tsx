@@ -40,10 +40,7 @@ function dedupeTickLabels(
 
 function formatTime(timestamp: string, range: RangeType): string {
   const d = new Date(timestamp);
-  if (range === "1h") {
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
-  if (range === "24h") {
+  if (range === "1h" || range === "24h") {
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   if (range === "7d") {
@@ -299,55 +296,66 @@ function UsageChart({ data, range, bucket, tokenData }: UsageChartProps) {
   );
 }
 
+function findClosestIndex(sorted: number[], target: number): number {
+  let lo = 0;
+  let hi = sorted.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  if (
+    lo > 0 &&
+    Math.abs(sorted[lo - 1] - target) < Math.abs(sorted[lo] - target)
+  ) {
+    return lo - 1;
+  }
+  return lo;
+}
+
+const MATCH_WINDOW_MS = 30 * 60 * 1000;
+
 function mergeDataSeries(
   usageData: DataPoint[],
   tokenData: TokenDataPoint[],
 ): MergedDataPoint[] {
-  // Start with usage data as the base, attach token fields where timestamps align
-  const merged: MergedDataPoint[] = usageData.map((u) => ({
-    ...u,
-    total_tokens: null,
-  }));
-
-  // Find closest token points for each usage point
   const tokenTimestamps = tokenData.map((t) => new Date(t.timestamp).getTime());
+  const usageTimestamps = usageData.map((u) => new Date(u.timestamp).getTime());
 
-  for (const point of merged) {
-    const usageTime = new Date(point.timestamp).getTime();
-
-    // Find the closest token timestamp within a reasonable window
-    let closest: number | null = null;
-    let closestDist = Infinity;
-    for (let i = 0; i < tokenTimestamps.length; i++) {
-      const dist = Math.abs(tokenTimestamps[i] - usageTime);
-      if (dist < closestDist) {
-        closestDist = dist;
-        closest = i;
-      }
+  // Build merged array from usage data, matching closest token via binary search
+  const merged: MergedDataPoint[] = usageData.map((u, i) => {
+    if (tokenTimestamps.length === 0) {
+      return { ...u, total_tokens: null };
     }
-
-    // Match within 30 min window
-    if (closest !== null && closestDist < 30 * 60 * 1000) {
-      point.total_tokens = tokenData[closest].total_tokens;
+    const closest = findClosestIndex(tokenTimestamps, usageTimestamps[i]);
+    const dist = Math.abs(tokenTimestamps[closest] - usageTimestamps[i]);
+    if (dist < MATCH_WINDOW_MS) {
+      return { ...u, total_tokens: tokenData[closest].total_tokens };
     }
-  }
+    return { ...u, total_tokens: null };
+  });
 
-  // Also add token data points that don't have nearby usage points
-  for (const t of tokenData) {
-    const tTime = new Date(t.timestamp).getTime();
-    const hasNearby = merged.some(
-      (m) => Math.abs(new Date(m.timestamp).getTime() - tTime) < 30 * 60 * 1000,
-    );
-    if (!hasNearby) {
+  // Add token data points without nearby usage points
+  for (let i = 0; i < tokenData.length; i++) {
+    if (usageTimestamps.length === 0) {
       merged.push({
-        timestamp: t.timestamp,
+        timestamp: tokenData[i].timestamp,
         utilization: null,
-        total_tokens: t.total_tokens,
+        total_tokens: tokenData[i].total_tokens,
+      });
+      continue;
+    }
+    const closest = findClosestIndex(usageTimestamps, tokenTimestamps[i]);
+    const dist = Math.abs(usageTimestamps[closest] - tokenTimestamps[i]);
+    if (dist >= MATCH_WINDOW_MS) {
+      merged.push({
+        timestamp: tokenData[i].timestamp,
+        utilization: null,
+        total_tokens: tokenData[i].total_tokens,
       });
     }
   }
 
-  // Sort by timestamp
   merged.sort(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
   );

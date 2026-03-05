@@ -88,6 +88,13 @@ export interface BreakdownSelection {
   lastActive: string;
 }
 
+export type SectionId = "live" | "analytics" | "learning";
+
+export interface SectionConfig {
+  id: SectionId;
+  visible: boolean;
+}
+
 export interface PendingUpdate {
   version: string;
   downloadAndInstall: () => Promise<void>;
@@ -97,4 +104,40 @@ export interface MergedDataPoint {
   timestamp: string;
   utilization: number | null;
   total_tokens: number | null;
+}
+
+// Learning system types
+
+export interface LearningSettings {
+  enabled: boolean;
+  trigger_mode: string;
+  periodic_minutes: number;
+  min_observations: number;
+}
+
+export interface LearnedRule {
+  name: string;
+  domain: string | null;
+  confidence: number;
+  observation_count: number;
+  file_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LearningRun {
+  id: number;
+  trigger_mode: string;
+  observations_analyzed: number;
+  rules_created: number;
+  rules_updated: number;
+  duration_ms: number | null;
+  status: string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface ToolCount {
+  tool_name: string;
+  count: number;
 }

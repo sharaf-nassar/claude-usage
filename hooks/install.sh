@@ -49,11 +49,21 @@ fi
 
 echo "Installing Claude Usage hook..."
 
-# Download hook script
+# Detect if running from the repo (local install) vs piped from GitHub
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+REPO_ROOT="${SCRIPT_DIR:+$(dirname "$SCRIPT_DIR")}"
+
 mkdir -p "$INSTALL_DIR"
-curl -fsSL "$HOOK_URL" -o "$HOOK_PATH"
+
+# Copy or download hook script
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/hooks/claude-usage-hook.sh" ]; then
+    cp "$REPO_ROOT/hooks/claude-usage-hook.sh" "$HOOK_PATH"
+    echo "  Copied hook from local repo to $HOOK_PATH"
+else
+    curl -fsSL "$HOOK_URL" -o "$HOOK_PATH"
+    echo "  Downloaded hook to $HOOK_PATH"
+fi
 chmod +x "$HOOK_PATH"
-echo "  Downloaded hook to $HOOK_PATH"
 
 # Write config file
 mkdir -p "$CONFIG_DIR"
@@ -69,7 +79,9 @@ config = {"url": url, "hostname": hostname}
 if secret:
     config["secret"] = secret
 
-with open(config_path, "w") as f:
+import os
+fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
 
@@ -82,12 +94,32 @@ else:
     print("    secret: (none — requests will be unauthenticated)")
 PYEOF
 
-# Merge hook into settings.json
-python3 - "$SETTINGS_FILE" "$HOOK_PATH" <<'PYEOF'
+# Copy or download observe and session-end-learn scripts
+OBSERVE_PATH="${INSTALL_DIR}/claude-usage-observe.js"
+SESSION_END_PATH="${INSTALL_DIR}/claude-usage-session-end-learn.js"
+
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/plugin/scripts/observe.js" ]; then
+    cp "$REPO_ROOT/plugin/scripts/observe.js" "$OBSERVE_PATH"
+    echo "  Copied observe hook from local repo"
+    cp "$REPO_ROOT/plugin/scripts/session-end-learn.js" "$SESSION_END_PATH"
+    echo "  Copied session-end-learn hook from local repo"
+else
+    OBSERVE_URL="https://raw.githubusercontent.com/sharaf-nassar/claude-usage/main/plugin/scripts/observe.js"
+    SESSION_END_URL="https://raw.githubusercontent.com/sharaf-nassar/claude-usage/main/plugin/scripts/session-end-learn.js"
+    curl -fsSL "$OBSERVE_URL" -o "$OBSERVE_PATH"
+    echo "  Downloaded observe hook to $OBSERVE_PATH"
+    curl -fsSL "$SESSION_END_URL" -o "$SESSION_END_PATH"
+    echo "  Downloaded session-end-learn hook to $SESSION_END_PATH"
+fi
+
+# Merge hooks into settings.json
+python3 - "$SETTINGS_FILE" "$HOOK_PATH" "$OBSERVE_PATH" "$SESSION_END_PATH" <<'PYEOF'
 import json, sys, os
 
 settings_path = sys.argv[1]
-hook_cmd = sys.argv[2]
+token_hook_cmd = sys.argv[2]
+observe_cmd = f"node {sys.argv[3]}"
+session_end_cmd = f"node {sys.argv[4]}"
 
 if os.path.exists(settings_path):
     with open(settings_path) as f:
@@ -97,25 +129,54 @@ else:
     settings = {}
 
 hooks = settings.setdefault("hooks", {})
+
+# Stop hook: token reporting + session-end learning
 stop_hooks = hooks.setdefault("Stop", [])
+token_found = False
+session_end_found = False
+for entry in stop_hooks:
+    for h in entry.get("hooks", []):
+        if "claude-usage-hook" in h.get("command", ""):
+            h["command"] = token_hook_cmd
+            token_found = True
+        if "session-end-learn" in h.get("command", ""):
+            h["command"] = session_end_cmd
+            session_end_found = True
 
-already_installed = any(
-    any("claude-usage-hook" in h.get("command", "") for h in entry.get("hooks", []))
-    for entry in stop_hooks
-)
-
-if already_installed:
+if not token_found:
+    stop_hooks.append({"matcher": "", "hooks": [{"type": "command", "command": token_hook_cmd}]})
+if not session_end_found:
+    added = False
     for entry in stop_hooks:
         for h in entry.get("hooks", []):
-            if "claude-usage-hook" in h.get("command", ""):
-                h["command"] = hook_cmd
-    print("  Updated existing hook in settings.json")
-else:
-    stop_hooks.append({
-        "matcher": "",
-        "hooks": [{"type": "command", "command": hook_cmd}]
-    })
-    print("  Added hook to settings.json")
+            if "claude-usage" in h.get("command", ""):
+                entry["hooks"].append({"type": "command", "command": session_end_cmd, "timeout": 5})
+                added = True
+                break
+        if added:
+            break
+    if not added:
+        stop_hooks.append({"matcher": "", "hooks": [{"type": "command", "command": session_end_cmd, "timeout": 5}]})
+
+print("  Configured Stop hooks (token reporting + session-end learning)")
+
+# PreToolUse + PostToolUse: observation hooks (synchronous — stdin required)
+for event in ["PreToolUse", "PostToolUse"]:
+    event_hooks = hooks.setdefault(event, [])
+    found = False
+    for entry in event_hooks:
+        for h in entry.get("hooks", []):
+            if "claude-usage" in h.get("command", ""):
+                h["command"] = observe_cmd
+                h.pop("async", None)
+                h["timeout"] = 3
+                found = True
+    if not found:
+        event_hooks.append({
+            "matcher": "*",
+            "hooks": [{"type": "command", "command": observe_cmd, "timeout": 3}]
+        })
+    print(f"  Configured {event} hook (tool observation)")
 
 with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
@@ -123,8 +184,11 @@ with open(settings_path, "w") as f:
 PYEOF
 
 echo ""
-echo "Done! The hook will report token usage after each Claude Code turn."
+echo "Done! Hooks installed:"
+echo "  - Token reporting (Stop hook)"
+echo "  - Tool observation (PreToolUse + PostToolUse hooks)"
+echo "  - Session-end learning trigger (Stop hook)"
 echo ""
 echo "To verify: curl ${USAGE_URL:-http://localhost:19876}/api/v1/health"
 echo "To reconfigure: re-run this script with --url and --hostname"
-echo "To uninstall: rm $HOOK_PATH $CONFIG_FILE && edit $SETTINGS_FILE"
+echo "To uninstall: rm $HOOK_PATH $OBSERVE_PATH $SESSION_END_PATH $CONFIG_FILE && edit $SETTINGS_FILE"

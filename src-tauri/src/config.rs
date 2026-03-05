@@ -4,14 +4,37 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tokio::sync::Mutex;
+
 const OAUTH_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 // Public OAuth client ID for the native desktop flow (not a secret).
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static REFRESH_LOCK: Mutex<()> = Mutex::const_new(());
+static CLAUDE_VERSION: OnceLock<String> = OnceLock::new();
 
-fn http_client() -> &'static reqwest::Client {
+pub fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(reqwest::Client::new)
+}
+
+pub fn claude_user_agent() -> &'static str {
+    CLAUDE_VERSION.get_or_init(|| {
+        std::process::Command::new("claude")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                let ver = s.split_whitespace().next()?.to_string();
+                if ver.contains('.') {
+                    Some(format!("claude-code/{ver}"))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "claude-code/0.0.0".into())
+    })
 }
 
 fn credentials_path() -> Option<PathBuf> {
@@ -36,6 +59,7 @@ pub fn read_access_token() -> Result<String, String> {
 }
 
 pub async fn refresh_access_token() -> Result<String, String> {
+    let _guard = REFRESH_LOCK.lock().await;
     let path = credentials_path().ok_or("Cannot determine home directory")?;
     if !path.exists() {
         return Err("Credentials file not found".into());
@@ -109,8 +133,8 @@ pub async fn refresh_access_token() -> Result<String, String> {
 
     tmp.write_all(updated.as_bytes())
         .map_err(|e| format!("Failed to write temp file: {e}"))?;
-    tmp.flush()
-        .map_err(|e| format!("Failed to flush temp file: {e}"))?;
+    tmp.sync_all()
+        .map_err(|e| format!("Failed to sync temp file: {e}"))?;
     drop(tmp);
 
     fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename credentials file: {e}"))?;

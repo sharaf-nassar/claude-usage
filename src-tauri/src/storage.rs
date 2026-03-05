@@ -1,12 +1,13 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
 
-use chrono::{Duration, Utc};
+use chrono::{TimeDelta, Utc};
+use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::models::{
-    BucketStats, DataPoint, HostBreakdown, ProjectBreakdown, SessionBreakdown, TokenDataPoint,
-    TokenReportPayload, TokenStats, UsageBucket,
+    BucketStats, DataPoint, HostBreakdown, LearnedRule, LearnedRulePayload, LearningRun,
+    LearningRunPayload, LearningStatus, ObservationPayload, ProjectBreakdown, SessionBreakdown,
+    TokenDataPoint, TokenReportPayload, TokenStats, ToolCount, UsageBucket,
 };
 
 fn db_path() -> Result<PathBuf, String> {
@@ -83,6 +84,8 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_token_snap_ts ON token_snapshots(timestamp);
             CREATE INDEX IF NOT EXISTS idx_token_snap_host ON token_snapshots(hostname);
+            CREATE INDEX IF NOT EXISTS idx_token_snap_session_ts ON token_snapshots(session_id, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_token_snap_cwd ON token_snapshots(cwd, timestamp);
 
             CREATE TABLE IF NOT EXISTS token_hourly (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,17 +103,76 @@ impl Storage {
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            -- Learning system tables
+            CREATE TABLE IF NOT EXISTS observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                hook_phase TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_input TEXT,
+                tool_output TEXT,
+                cwd TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_obs_session ON observations(session_id);
+            CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_obs_created ON observations(created_at);
+
+            CREATE TABLE IF NOT EXISTS learning_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_mode TEXT NOT NULL,
+                observations_analyzed INTEGER NOT NULL DEFAULT 0,
+                rules_created INTEGER NOT NULL DEFAULT 0,
+                rules_updated INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER,
+                status TEXT NOT NULL DEFAULT 'running',
+                error TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS learned_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                domain TEXT,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                observation_count INTEGER NOT NULL DEFAULT 0,
+                file_path TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
             );",
         )
         .map_err(|e| format!("Failed to create tables: {e}"))?;
 
-        // Migration: add cwd column to token_snapshots if missing
-        let has_cwd: bool = conn
-            .prepare("SELECT cwd FROM token_snapshots LIMIT 0")
-            .is_ok();
-        if !has_cwd {
-            conn.execute_batch("ALTER TABLE token_snapshots ADD COLUMN cwd TEXT DEFAULT NULL;")
-                .map_err(|e| format!("Migration (add cwd column) error: {e}"))?;
+        // Schema versioning
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
+            )",
+        )
+        .map_err(|e| format!("Failed to create schema_version table: {e}"))?;
+
+        let current_version: i32 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        // Migration 1: add cwd column to token_snapshots
+        if current_version < 1 {
+            let has_cwd: bool = conn
+                .prepare("SELECT cwd FROM token_snapshots LIMIT 0")
+                .is_ok();
+            if !has_cwd {
+                conn.execute_batch("ALTER TABLE token_snapshots ADD COLUMN cwd TEXT DEFAULT NULL;")
+                    .map_err(|e| format!("Migration 1 (add cwd column) error: {e}"))?;
+            }
+            conn.execute("INSERT INTO schema_version (version) VALUES (1)", [])
+                .map_err(|e| format!("Failed to record migration 1: {e}"))?;
         }
 
         let storage = Self {
@@ -125,11 +187,15 @@ impl Storage {
             eprintln!("Warning: token cleanup on startup failed: {e}");
         }
 
+        if let Err(e) = storage.cleanup_old_observations() {
+            eprintln!("Warning: observation cleanup on startup failed: {e}");
+        }
+
         Ok(storage)
     }
 
     pub fn store_snapshot(&self, buckets: &[UsageBucket]) -> Result<(), String> {
-        let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let mut conn = self.conn.lock();
         let now = Utc::now().to_rfc3339();
 
         let tx = conn
@@ -158,11 +224,15 @@ impl Storage {
     }
 
     pub fn aggregate_and_cleanup(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let cutoff = (Utc::now() - Duration::days(30)).to_rfc3339();
+        let mut conn = self.conn.lock();
+        let cutoff = (Utc::now() - TimeDelta::days(30)).to_rfc3339();
 
-        conn.execute(
-            "INSERT OR REPLACE INTO usage_hourly (hour, bucket_label, avg_utilization, max_utilization, min_utilization, sample_count)
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Transaction error: {e}"))?;
+
+        tx.execute(
+            "INSERT INTO usage_hourly (hour, bucket_label, avg_utilization, max_utilization, min_utilization, sample_count)
              SELECT
                  strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hour,
                  bucket_label,
@@ -172,31 +242,39 @@ impl Storage {
                  COUNT(*)
              FROM usage_snapshots
              WHERE timestamp < ?1
-             GROUP BY hour, bucket_label",
+             GROUP BY hour, bucket_label
+             ON CONFLICT(hour, bucket_label) DO UPDATE SET
+                 avg_utilization = (usage_hourly.avg_utilization * usage_hourly.sample_count + excluded.avg_utilization * excluded.sample_count)
+                     / (usage_hourly.sample_count + excluded.sample_count),
+                 max_utilization = MAX(usage_hourly.max_utilization, excluded.max_utilization),
+                 min_utilization = MIN(usage_hourly.min_utilization, excluded.min_utilization),
+                 sample_count = usage_hourly.sample_count + excluded.sample_count",
             params![cutoff],
         )
         .map_err(|e| format!("Aggregation insert error: {e}"))?;
 
-        conn.execute(
+        tx.execute(
             "DELETE FROM usage_snapshots WHERE timestamp < ?1",
             params![cutoff],
         )
         .map_err(|e| format!("Aggregation delete error: {e}"))?;
 
+        tx.commit().map_err(|e| format!("Commit error: {e}"))?;
+
         Ok(())
     }
 
     pub fn get_usage_history(&self, bucket: &str, range: &str) -> Result<Vec<DataPoint>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         let now = Utc::now();
 
         let (from, use_hourly) = match range {
-            "1h" => (now - Duration::hours(1), false),
-            "24h" => (now - Duration::hours(24), false),
-            "7d" => (now - Duration::days(7), false),
-            "30d" => (now - Duration::days(30), true),
-            "all" => (now - Duration::days(365), true),
-            _ => (now - Duration::hours(24), false),
+            "1h" => (now - TimeDelta::hours(1), false),
+            "24h" => (now - TimeDelta::hours(24), false),
+            "7d" => (now - TimeDelta::days(7), false),
+            "30d" => (now - TimeDelta::days(30), true),
+            "all" => (now - TimeDelta::days(365), true),
+            _ => (now - TimeDelta::hours(24), false),
         };
 
         let from_str = from.to_rfc3339();
@@ -285,7 +363,7 @@ impl Storage {
     }
 
     pub fn get_usage_stats(&self, bucket: &str, days: i32) -> Result<BucketStats, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         Self::get_usage_stats_with_conn(&conn, bucket, days)
     }
 
@@ -294,7 +372,8 @@ impl Storage {
         bucket: &str,
         days: i32,
     ) -> Result<BucketStats, String> {
-        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+        let days = days.clamp(1, 365);
+        let from = (Utc::now() - TimeDelta::days(days as i64)).to_rfc3339();
 
         let mut stmt = conn
             .prepare_cached(
@@ -342,7 +421,7 @@ impl Storage {
         current_buckets: &[UsageBucket],
         days: i32,
     ) -> Result<Vec<BucketStats>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         let mut results = Vec::new();
         for bucket in current_buckets {
             let mut stats = Self::get_usage_stats_with_conn(&conn, &bucket.label, days)?;
@@ -353,13 +432,13 @@ impl Storage {
     }
 
     pub fn get_snapshot_count(&self) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         conn.query_row("SELECT COUNT(*) FROM usage_snapshots", [], |row| row.get(0))
             .map_err(|e| format!("Count error: {e}"))
     }
 
     pub fn store_token_snapshot(&self, payload: &TokenReportPayload) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         let now = Utc::now().to_rfc3339();
 
         conn.execute(
@@ -388,19 +467,19 @@ impl Storage {
         session_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<TokenDataPoint>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         let now = Utc::now();
 
         // Skip hourly aggregates when filtering by session_id or cwd since
         // token_hourly doesn't store those fields
         let needs_granular = session_id.is_some() || cwd.is_some();
         let (from, use_hourly) = match range {
-            "1h" => (now - Duration::hours(1), false),
-            "24h" => (now - Duration::hours(24), false),
-            "7d" => (now - Duration::days(7), false),
-            "30d" => (now - Duration::days(30), !needs_granular),
-            "all" => (now - Duration::days(365), !needs_granular),
-            _ => (now - Duration::hours(24), false),
+            "1h" => (now - TimeDelta::hours(1), false),
+            "24h" => (now - TimeDelta::hours(24), false),
+            "7d" => (now - TimeDelta::days(7), false),
+            "30d" => (now - TimeDelta::days(30), !needs_granular),
+            "all" => (now - TimeDelta::days(365), !needs_granular),
+            _ => (now - TimeDelta::hours(24), false),
         };
 
         let from_str = from.to_rfc3339();
@@ -430,7 +509,7 @@ impl Storage {
                 };
 
             let mut stmt = conn
-                .prepare_cached(&hourly_sql)
+                .prepare(&hourly_sql)
                 .map_err(|e| format!("Prepare error: {e}"))?;
 
             let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -498,7 +577,7 @@ impl Storage {
         };
 
         let mut stmt2 = conn
-            .prepare_cached(&snap_sql)
+            .prepare(&snap_sql)
             .map_err(|e| format!("Prepare error: {e}"))?;
 
         let params_refs2: Vec<&dyn rusqlite::types::ToSql> =
@@ -541,8 +620,9 @@ impl Storage {
         hostname: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<TokenStats, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+        let days = days.clamp(1, 365);
+        let conn = self.conn.lock();
+        let from = (Utc::now() - TimeDelta::days(days as i64)).to_rfc3339();
 
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             if let Some(project) = cwd {
@@ -587,7 +667,7 @@ impl Storage {
             };
 
         let mut stmt = conn
-            .prepare_cached(&sql)
+            .prepare(&sql)
             .map_err(|e| format!("Prepare error: {e}"))?;
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -624,7 +704,7 @@ impl Storage {
     }
 
     pub fn get_token_hostnames(&self) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         let mut stmt = conn
             .prepare_cached("SELECT DISTINCT hostname FROM token_snapshots ORDER BY hostname ASC")
             .map_err(|e| format!("Prepare error: {e}"))?;
@@ -641,8 +721,9 @@ impl Storage {
     }
 
     pub fn get_host_breakdown(&self, days: i32) -> Result<Vec<HostBreakdown>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+        let days = days.clamp(1, 365);
+        let conn = self.conn.lock();
+        let from = (Utc::now() - TimeDelta::days(days as i64)).to_rfc3339();
 
         let mut stmt = conn
             .prepare_cached(
@@ -678,8 +759,9 @@ impl Storage {
     }
 
     pub fn get_project_breakdown(&self, days: i32) -> Result<Vec<ProjectBreakdown>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+        let days = days.clamp(1, 365);
+        let conn = self.conn.lock();
+        let from = (Utc::now() - TimeDelta::days(days as i64)).to_rfc3339();
 
         let mut stmt = conn
             .prepare_cached(
@@ -723,8 +805,9 @@ impl Storage {
         days: i32,
         hostname: Option<&str>,
     ) -> Result<Vec<SessionBreakdown>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let from = (Utc::now() - Duration::days(days as i64)).to_rfc3339();
+        let days = days.clamp(1, 365);
+        let conn = self.conn.lock();
+        let from = (Utc::now() - TimeDelta::days(days as i64)).to_rfc3339();
 
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(host) =
             hostname
@@ -769,7 +852,7 @@ impl Storage {
         };
 
         let mut stmt = conn
-            .prepare_cached(&sql)
+            .prepare(&sql)
             .map_err(|e| format!("Prepare error: {e}"))?;
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -797,7 +880,7 @@ impl Storage {
     }
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         let mut stmt = conn
             .prepare_cached("SELECT value FROM settings WHERE key = ?1")
             .map_err(|e| format!("Prepare error: {e}"))?;
@@ -806,7 +889,7 @@ impl Storage {
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![key, value],
@@ -816,27 +899,33 @@ impl Storage {
     }
 
     pub fn delete_host_data(&self, hostname: &str) -> Result<u64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let mut conn = self.conn.lock();
 
-        let snap_count = conn
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Transaction error: {e}"))?;
+
+        let snap_count = tx
             .execute(
                 "DELETE FROM token_snapshots WHERE hostname = ?1",
                 params![hostname],
             )
             .map_err(|e| format!("Delete snapshots error: {e}"))?;
 
-        let hourly_count = conn
+        let hourly_count = tx
             .execute(
                 "DELETE FROM token_hourly WHERE hostname = ?1",
                 params![hostname],
             )
             .map_err(|e| format!("Delete hourly error: {e}"))?;
 
+        tx.commit().map_err(|e| format!("Commit error: {e}"))?;
+
         Ok((snap_count + hourly_count) as u64)
     }
 
     pub fn delete_session_data(&self, session_id: &str) -> Result<u64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
 
         let count = conn
             .execute(
@@ -849,7 +938,7 @@ impl Storage {
     }
 
     pub fn delete_project_data(&self, cwd: &str) -> Result<u64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self.conn.lock();
 
         let count = conn
             .execute("DELETE FROM token_snapshots WHERE cwd = ?1", params![cwd])
@@ -858,12 +947,396 @@ impl Storage {
         Ok(count as u64)
     }
 
-    pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let cutoff = (Utc::now() - Duration::days(30)).to_rfc3339();
+    // --- Learning system methods ---
 
+    pub fn store_observation(&self, payload: &ObservationPayload) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT OR REPLACE INTO token_hourly (hour, hostname, total_input, total_output, total_cache_creation, total_cache_read, turn_count)
+            "INSERT INTO observations (session_id, timestamp, hook_phase, tool_name, tool_input, tool_output, cwd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                payload.session_id,
+                now,
+                payload.hook_phase,
+                payload.tool_name,
+                payload.tool_input,
+                payload.tool_output,
+                payload.cwd,
+            ],
+        )
+        .map_err(|e| format!("Insert observation error: {e}"))?;
+        Ok(())
+    }
+
+    pub fn get_recent_observations(&self, limit: i64) -> Result<Vec<serde_json::Value>, String> {
+        self.get_observations_since(None, limit)
+    }
+
+    pub fn get_unanalyzed_observations(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let conn = self.conn.lock();
+        let since: String = conn
+            .query_row(
+                "SELECT COALESCE(MAX(created_at), '1970-01-01') FROM learning_runs WHERE status = 'completed'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Query last run error: {e}"))?;
+        drop(conn);
+        self.get_observations_since(Some(&since), limit)
+    }
+
+    fn get_observations_since(
+        &self,
+        since: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let conn = self.conn.lock();
+        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since {
+            Some(s) => (
+                "SELECT id, session_id, timestamp, hook_phase, tool_name, tool_input, tool_output, cwd, created_at
+                 FROM observations
+                 WHERE created_at > ?1
+                 ORDER BY created_at DESC
+                 LIMIT ?2",
+                vec![Box::new(s.to_string()) as Box<dyn rusqlite::types::ToSql>, Box::new(limit)],
+            ),
+            None => (
+                "SELECT id, session_id, timestamp, hook_phase, tool_name, tool_input, tool_output, cwd, created_at
+                 FROM observations
+                 ORDER BY created_at DESC
+                 LIMIT ?1",
+                vec![Box::new(limit) as Box<dyn rusqlite::types::ToSql>],
+            ),
+        };
+        let mut stmt = conn
+            .prepare_cached(sql)
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "session_id": row.get::<_, String>(1)?,
+                    "timestamp": row.get::<_, String>(2)?,
+                    "hook_phase": row.get::<_, String>(3)?,
+                    "tool_name": row.get::<_, String>(4)?,
+                    "tool_input": row.get::<_, Option<String>>(5)?,
+                    "tool_output": row.get::<_, Option<String>>(6)?,
+                    "cwd": row.get::<_, Option<String>>(7)?,
+                    "created_at": row.get::<_, String>(8)?,
+                }))
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_observation_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock();
+        conn.query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+            .map_err(|e| format!("Count error: {e}"))
+    }
+
+    pub fn get_unanalyzed_observation_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT COUNT(*) FROM observations WHERE created_at > (
+                SELECT COALESCE(MAX(created_at), '1970-01-01') FROM learning_runs WHERE status = 'completed'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Count error: {e}"))
+    }
+
+    pub fn get_top_tools(&self, limit: i64, days: i64) -> Result<Vec<ToolCount>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT tool_name, COUNT(*) as count FROM observations
+                 WHERE created_at >= datetime('now', '-' || ?1 || ' days')
+                 GROUP BY tool_name ORDER BY count DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map(params![days, limit], |row| {
+                Ok(ToolCount {
+                    tool_name: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_observation_sparkline(&self) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT DATE(created_at) as day, COUNT(*) as count
+                 FROM observations
+                 WHERE created_at >= DATE('now', '-6 days')
+                 GROUP BY day ORDER BY day ASC",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut day_map = std::collections::HashMap::new();
+        for row in rows {
+            let (day, count) = row.map_err(|e| format!("Row error: {e}"))?;
+            day_map.insert(day, count);
+        }
+
+        // Build a 7-element array, zero-filled for missing days
+        let today = Utc::now().date_naive();
+        let mut result = Vec::with_capacity(7);
+        for i in (0..7).rev() {
+            let day = (today - chrono::Duration::days(i))
+                .format("%Y-%m-%d")
+                .to_string();
+            let count = day_map.get(&day).copied().unwrap_or(0);
+            result.push(count);
+        }
+        Ok(result)
+    }
+
+    pub fn store_learning_run(&self, payload: &LearningRunPayload) -> Result<i64, String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO learning_runs (trigger_mode, observations_analyzed, rules_created, rules_updated, duration_ms, status, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                payload.trigger_mode,
+                payload.observations_analyzed,
+                payload.rules_created,
+                payload.rules_updated,
+                payload.duration_ms,
+                payload.status,
+                payload.error,
+            ],
+        )
+        .map_err(|e| format!("Insert learning run error: {e}"))?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_learning_runs(&self, limit: i64) -> Result<Vec<LearningRun>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, trigger_mode, observations_analyzed, rules_created, rules_updated, duration_ms, status, error, created_at
+                 FROM learning_runs ORDER BY created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(LearningRun {
+                    id: row.get(0)?,
+                    trigger_mode: row.get(1)?,
+                    observations_analyzed: row.get(2)?,
+                    rules_created: row.get(3)?,
+                    rules_updated: row.get(4)?,
+                    duration_ms: row.get(5)?,
+                    status: row.get(6)?,
+                    error: row.get(7)?,
+                    created_at: row.get(8)?,
+                })
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+        }
+        Ok(results)
+    }
+
+    pub fn store_learned_rule(&self, payload: &LearnedRulePayload) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO learned_rules (name, domain, confidence, observation_count, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET
+                 domain = excluded.domain,
+                 confidence = MIN(0.95, learned_rules.confidence * 0.6 + excluded.confidence * 0.4),
+                 observation_count = learned_rules.observation_count + excluded.observation_count,
+                 file_path = excluded.file_path,
+                 updated_at = datetime('now')",
+            params![
+                payload.name,
+                payload.domain,
+                payload.confidence,
+                payload.observation_count,
+                payload.file_path,
+            ],
+        )
+        .map_err(|e| format!("Insert learned rule error: {e}"))?;
+        Ok(())
+    }
+
+    pub fn get_learned_rules(&self) -> Result<Vec<LearnedRule>, String> {
+        // Fetch all metadata from DB in one query
+        let mut meta_map = {
+            let conn = self.conn.lock();
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT name, domain, confidence, observation_count, created_at, updated_at
+                     FROM learned_rules",
+                )
+                .map_err(|e| format!("Prepare error: {e}"))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, f64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .map_err(|e| format!("Query error: {e}"))?;
+
+            let mut map = std::collections::HashMap::new();
+            for row in rows {
+                let (name, domain, confidence, obs_count, created, updated) =
+                    row.map_err(|e| format!("Row error: {e}"))?;
+                map.insert(name, (domain, confidence, obs_count, created, updated));
+            }
+            map
+        };
+
+        // Scan filesystem as authoritative list, join with pre-fetched metadata
+        let rules_dir = dirs::home_dir()
+            .ok_or("Cannot determine home directory")?
+            .join(".claude")
+            .join("rules")
+            .join("learned");
+
+        let mut rules = Vec::new();
+        if rules_dir.exists() {
+            let entries =
+                std::fs::read_dir(&rules_dir).map_err(|e| format!("Read dir error: {e}"))?;
+
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("Dir entry error: {e}"))?;
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "md") {
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let file_path = path.to_string_lossy().to_string();
+
+                    let now = Utc::now().to_rfc3339();
+                    let (domain, confidence, observation_count, created_at, updated_at) = meta_map
+                        .remove(&name)
+                        .unwrap_or((None, 0.5, 0, now.clone(), now));
+
+                    rules.push(LearnedRule {
+                        name,
+                        domain,
+                        confidence,
+                        observation_count,
+                        file_path,
+                        created_at,
+                        updated_at,
+                    });
+                }
+            }
+        }
+
+        // Sort by confidence descending
+        rules.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Ok(rules)
+    }
+
+    pub fn delete_learned_rule(&self, name: &str) -> Result<(), String> {
+        if !crate::learning::is_safe_rule_name(name) {
+            return Err(format!(
+                "Invalid rule name: {}",
+                &name[..name.len().min(50)]
+            ));
+        }
+
+        // Delete from table
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM learned_rules WHERE name = ?1", params![name])
+            .map_err(|e| format!("Delete rule error: {e}"))?;
+
+        // Delete file
+        let rules_dir = dirs::home_dir()
+            .ok_or("Cannot determine home directory")?
+            .join(".claude")
+            .join("rules")
+            .join("learned");
+        let file_path = rules_dir.join(format!("{name}.md"));
+        if file_path.exists() {
+            std::fs::remove_file(&file_path).map_err(|e| format!("Delete file error: {e}"))?;
+        }
+        Ok(())
+    }
+
+    pub fn get_learning_status(&self) -> Result<LearningStatus, String> {
+        let observation_count = self.get_observation_count()?;
+        let unanalyzed_count = self.get_unanalyzed_observation_count()?;
+        let rules = self.get_learned_rules()?;
+        let runs = self.get_learning_runs(1)?;
+
+        Ok(LearningStatus {
+            observation_count,
+            unanalyzed_count,
+            rules_count: rules.len() as i64,
+            last_run: runs.into_iter().next(),
+        })
+    }
+
+    pub fn cleanup_old_observations(&self) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM observations WHERE created_at < datetime('now', '-30 days')",
+            [],
+        )
+        .map_err(|e| format!("Observation cleanup error: {e}"))?;
+        Ok(())
+    }
+
+    pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {
+        let mut conn = self.conn.lock();
+        let cutoff = (Utc::now() - TimeDelta::days(30)).to_rfc3339();
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Transaction error: {e}"))?;
+
+        tx.execute(
+            "INSERT INTO token_hourly (hour, hostname, total_input, total_output, total_cache_creation, total_cache_read, turn_count)
              SELECT
                  strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hour,
                  hostname,
@@ -874,16 +1347,24 @@ impl Storage {
                  COUNT(*)
              FROM token_snapshots
              WHERE timestamp < ?1
-             GROUP BY hour, hostname",
+             GROUP BY hour, hostname
+             ON CONFLICT(hour, hostname) DO UPDATE SET
+                 total_input = token_hourly.total_input + excluded.total_input,
+                 total_output = token_hourly.total_output + excluded.total_output,
+                 total_cache_creation = token_hourly.total_cache_creation + excluded.total_cache_creation,
+                 total_cache_read = token_hourly.total_cache_read + excluded.total_cache_read,
+                 turn_count = token_hourly.turn_count + excluded.turn_count",
             params![cutoff],
         )
         .map_err(|e| format!("Token aggregation insert error: {e}"))?;
 
-        conn.execute(
+        tx.execute(
             "DELETE FROM token_snapshots WHERE timestamp < ?1",
             params![cutoff],
         )
         .map_err(|e| format!("Token aggregation delete error: {e}"))?;
+
+        tx.commit().map_err(|e| format!("Commit error: {e}"))?;
 
         Ok(())
     }
@@ -891,8 +1372,8 @@ impl Storage {
 
 fn calc_trend(conn: &Connection, bucket: &str) -> Result<String, String> {
     let now = Utc::now();
-    let one_hour_ago = (now - Duration::hours(1)).to_rfc3339();
-    let two_hours_ago = (now - Duration::hours(2)).to_rfc3339();
+    let one_hour_ago = (now - TimeDelta::hours(1)).to_rfc3339();
+    let two_hours_ago = (now - TimeDelta::hours(2)).to_rfc3339();
 
     let recent_avg: Option<f64> = conn
         .query_row(
@@ -925,10 +1406,9 @@ fn downsample_tokens(points: Vec<TokenDataPoint>, max: usize) -> Vec<TokenDataPo
         return points;
     }
 
-    let chunk_size = points.len() / max;
+    let chunk_size = points.len().div_ceil(max);
     points
         .chunks(chunk_size)
-        .take(max)
         .map(|chunk| {
             let inp: i64 = chunk.iter().map(|p| p.input_tokens).sum();
             let out: i64 = chunk.iter().map(|p| p.output_tokens).sum();
@@ -951,10 +1431,9 @@ fn downsample(points: Vec<DataPoint>, max: usize) -> Vec<DataPoint> {
         return points;
     }
 
-    let chunk_size = points.len() / max;
+    let chunk_size = points.len().div_ceil(max);
     points
         .chunks(chunk_size)
-        .take(max)
         .map(|chunk| {
             let avg_util = chunk.iter().map(|p| p.utilization).sum::<f64>() / chunk.len() as f64;
             DataPoint {

@@ -29,16 +29,19 @@ interface UsageDisplayProps {
 function UsageDisplay({ data, timeMode, onTimeModeChange }: UsageDisplayProps) {
   const [open, setOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
+  const [tick, setTick] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(e.target as Node)
-      ) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);
       }
     };
@@ -53,7 +56,7 @@ function UsageDisplay({ data, timeMode, onTimeModeChange }: UsageDisplayProps) {
   }, [open, focusIdx]);
 
   if (!data) {
-    return <div className="loading">Loading...</div>;
+    return <div className="loading">{"Loading\u2026"}</div>;
   }
 
   if (data.error) {
@@ -156,6 +159,7 @@ function UsageDisplay({ data, timeMode, onTimeModeChange }: UsageDisplayProps) {
           resetsAt={bucket.resets_at}
           timeMode={timeMode}
           showTokenSparkline={i === 0}
+          tick={tick}
         />
       ))}
     </div>

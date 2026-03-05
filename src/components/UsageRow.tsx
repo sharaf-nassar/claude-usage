@@ -11,10 +11,10 @@ function colorClass(utilization: number): string {
   return "red";
 }
 
-function statusText(utilization: number): string {
-  if (utilization < 50) return "";
-  if (utilization < 80) return "High";
-  return "Crit";
+function statusText(utilization: number): { short: string; full: string } {
+  if (utilization < 50) return { short: "", full: "" };
+  if (utilization < 80) return { short: "High", full: "High usage" };
+  return { short: "Crit", full: "Critical usage" };
 }
 
 function gradientColor(utilization: number): string {
@@ -73,7 +73,10 @@ function formatNumUnit(text: string): ReactNode[] {
   });
 }
 
-function getTimeFraction(resetsAt: string | null, label: string): number | null {
+function getTimeFraction(
+  resetsAt: string | null,
+  label: string,
+): number | null {
   if (!resetsAt) return null;
   try {
     const resetDate = new Date(resetsAt);
@@ -96,22 +99,29 @@ function TokenSparkline() {
 
   useEffect(() => {
     let cancelled = false;
-    invoke<TokenDataPoint[]>("get_token_history", {
-      range: "24h",
-      hostname: null,
-    })
-      .then((data) => {
-        if (!cancelled && data.length > 0) {
-          const sampled =
-            data.length > 30
-              ? data.filter((_, i) => i % Math.ceil(data.length / 30) === 0)
-              : data;
-          setSparkData(sampled);
-        }
+    const fetchData = () => {
+      invoke<TokenDataPoint[]>("get_token_history", {
+        range: "24h",
+        hostname: null,
+        sessionId: null,
+        cwd: null,
       })
-      .catch(() => {});
+        .then((data) => {
+          if (!cancelled && data.length > 0) {
+            const sampled =
+              data.length > 30
+                ? data.filter((_, i) => i % Math.ceil(data.length / 30) === 0)
+                : data;
+            setSparkData(sampled);
+          }
+        })
+        .catch(() => {});
+    };
+    fetchData();
+    const interval = setInterval(fetchData, 3 * 60_000);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, []);
 
@@ -218,6 +228,7 @@ interface UsageRowProps {
   resetsAt: string | null;
   timeMode: TimeMode;
   showTokenSparkline: boolean;
+  tick: number;
 }
 
 function UsageRow({
@@ -226,14 +237,8 @@ function UsageRow({
   resetsAt,
   timeMode,
   showTokenSparkline,
+  tick: _tick,
 }: UsageRowProps) {
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 10_000);
-    return () => clearInterval(interval);
-  }, []);
-
   const fraction = Math.min(utilization / 100, 1);
   const cls = colorClass(utilization);
   const status = statusText(utilization);
@@ -248,8 +253,13 @@ function UsageRow({
         <span className="row-label">{formatNumUnit(label)}</span>
         <span className="row-percent" style={{ color: pctColor }}>
           {Math.round(utilization)}%
-          <span className="status-label" style={{ color: pctColor }}>
-            {status}
+          <span
+            className="status-label"
+            style={{ color: pctColor }}
+            title={status.full}
+            aria-label={status.full}
+          >
+            {status.short}
           </span>
         </span>
         <span className="row-countdown">{countdown}</span>
