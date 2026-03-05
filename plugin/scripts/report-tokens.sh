@@ -12,25 +12,19 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 0
 fi
 
-# Read URL, hostname, and secret from config file
-USAGE_URL=$(python3 -c "
+# Read URL, hostname, and secret from config file in a single Python call
+CONFIG_VALUES=$(python3 -c "
 import json, sys
 with open(sys.argv[1]) as f:
     c = json.load(f)
 print(c.get('url', ''))
-" "$CONFIG_FILE" 2>/dev/null || true)
-HOSTNAME_ID=$(python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    c = json.load(f)
 print(c.get('hostname', ''))
-" "$CONFIG_FILE" 2>/dev/null || true)
-SECRET=$(python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    c = json.load(f)
 print(c.get('secret', ''))
 " "$CONFIG_FILE" 2>/dev/null || true)
+
+USAGE_URL=$(echo "$CONFIG_VALUES" | sed -n '1p')
+HOSTNAME_ID=$(echo "$CONFIG_VALUES" | sed -n '2p')
+SECRET=$(echo "$CONFIG_VALUES" | sed -n '3p')
 
 # If config exists but URL is empty/missing, skip
 if [ -z "$USAGE_URL" ]; then
@@ -43,34 +37,24 @@ HOSTNAME_ID="${HOSTNAME_ID:-$(hostname -s 2>/dev/null || echo local)}"
 # Read hook payload from stdin
 HOOK_INPUT=$(cat)
 
-# Exit early if this is a re-entry from a previous stop hook
-IS_ACTIVE=$(echo "$HOOK_INPUT" | python3 -c "
+# Parse all hook fields in a single Python call
+HOOK_FIELDS=$(echo "$HOOK_INPUT" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 print(data.get('stop_hook_active', False))
-" 2>/dev/null || echo "False")
+print(data.get('session_id', ''))
+print(data.get('transcript_path', ''))
+print(data.get('cwd') or '')
+" 2>/dev/null) || exit 0
+
+IS_ACTIVE=$(echo "$HOOK_FIELDS" | sed -n '1p')
+SESSION_ID=$(echo "$HOOK_FIELDS" | sed -n '2p')
+TRANSCRIPT_PATH=$(echo "$HOOK_FIELDS" | sed -n '3p')
+CWD=$(echo "$HOOK_FIELDS" | sed -n '4p')
 
 if [ "$IS_ACTIVE" = "True" ]; then
     exit 0
 fi
-
-SESSION_ID=$(echo "$HOOK_INPUT" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print(data.get('session_id', ''))
-" 2>/dev/null || true)
-
-TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print(data.get('transcript_path', ''))
-" 2>/dev/null || true)
-
-CWD=$(echo "$HOOK_INPUT" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-print(data.get('cwd') or '')
-" 2>/dev/null || true)
 
 if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
     exit 0
@@ -133,19 +117,15 @@ if [ -z "$PAYLOAD" ]; then
 fi
 
 # POST to the widget server (fire-and-forget, 2s timeout)
-if [ -n "$SECRET" ]; then
-    curl -s -m 2 \
-        -X POST \
-        -H 'Content-Type: application/json' \
-        -H "Authorization: Bearer $SECRET" \
-        -d "$PAYLOAD" \
-        "${USAGE_URL}/api/v1/tokens" \
-        >/dev/null 2>&1 || true
-else
-    curl -s -m 2 \
-        -X POST \
-        -H 'Content-Type: application/json' \
-        -d "$PAYLOAD" \
-        "${USAGE_URL}/api/v1/tokens" \
-        >/dev/null 2>&1 || true
+# Skip if no secret is configured — the server requires auth
+if [ -z "$SECRET" ]; then
+    exit 0
 fi
+
+curl -s -m 2 \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer $SECRET" \
+    -d "$PAYLOAD" \
+    "${USAGE_URL}/api/v1/tokens" \
+    >/dev/null 2>&1 || true

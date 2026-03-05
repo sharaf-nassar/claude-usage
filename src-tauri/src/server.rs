@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
@@ -9,11 +9,16 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use parking_lot::Mutex;
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 
 use tauri::Emitter;
 
-use crate::models::TokenReportPayload;
+use crate::models::{
+    LearnedRulePayload, LearningRunPayload, ObservationPayload, SessionEndPayload,
+    TokenReportPayload,
+};
 use crate::storage::Storage;
 
 const DEFAULT_PORT: u16 = 19876;
@@ -21,11 +26,16 @@ const MAX_REQUESTS: usize = 100;
 const RATE_WINDOW_SECS: u64 = 60;
 const MAX_STRING_LEN: usize = 256;
 const MAX_CWD_LEN: usize = 4096;
+const MAX_TOKEN_VALUE: i64 = 100_000_000;
+const MAX_TOOL_DATA_LEN: usize = 2048;
+
+const MAX_OBS_REQUESTS: usize = 500;
 
 struct ServerState {
     storage: &'static Storage,
     secret: String,
     rate_limiter: Mutex<VecDeque<Instant>>,
+    obs_rate_limiter: Mutex<VecDeque<Instant>>,
     app_handle: tauri::AppHandle,
 }
 
@@ -35,25 +45,15 @@ fn check_auth(headers: &HeaderMap, secret: &str) -> bool {
         _ => return false,
     };
 
-    if token.len() != secret.len() {
-        return false;
-    }
-
-    // Constant-time comparison via XOR-fold
-    let equal = token
-        .as_bytes()
-        .iter()
-        .zip(secret.as_bytes().iter())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b));
-
-    equal == 0
+    // Constant-time comparison via the `subtle` crate.
+    // For equal-length inputs ct_eq iterates all bytes via XOR.
+    // Length mismatch returns false immediately, but our secret is a
+    // fixed-length hex string so length is not sensitive.
+    token.as_bytes().ct_eq(secret.as_bytes()).into()
 }
 
 fn check_rate_limit(rate_limiter: &Mutex<VecDeque<Instant>>) -> bool {
-    let mut window = match rate_limiter.lock() {
-        Ok(w) => w,
-        Err(_) => return false,
-    };
+    let mut window = rate_limiter.lock();
 
     let now = Instant::now();
     let cutoff = now - std::time::Duration::from_secs(RATE_WINDOW_SECS);
@@ -81,27 +81,36 @@ pub async fn start_server(storage: &'static Storage, secret: String, app_handle:
         storage,
         secret,
         rate_limiter: Mutex::new(VecDeque::new()),
+        obs_rate_limiter: Mutex::new(VecDeque::new()),
         app_handle,
     });
 
     let app = Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/tokens", post(report_tokens))
+        .route("/api/v1/learning/observations", post(post_observation))
+        .route("/api/v1/learning/observations", get(get_observations))
+        .route("/api/v1/learning/session-end", post(post_session_end))
+        .route("/api/v1/learning/status", get(get_learning_status))
+        .route("/api/v1/learning/runs", post(post_learning_run))
+        .route("/api/v1/learning/runs", get(get_learning_runs))
+        .route("/api/v1/learning/rules", post(post_learned_rule))
         .with_state(state);
 
+    // Bind to 0.0.0.0 intentionally — remote hosts need to reach this server
     let addr = format!("0.0.0.0:{port}");
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("Failed to bind token server on {addr}: {e}");
+            log::error!("Failed to bind token server on {addr}: {e}");
             return;
         }
     };
 
-    eprintln!("Token server listening on {addr}");
+    log::info!("Token server listening on {addr}");
 
     if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("Token server error: {e}");
+        log::error!("Token server error: {e}");
     }
 }
 
@@ -153,6 +162,16 @@ async fn report_tokens(
             "token counts must be non-negative".to_string(),
         );
     }
+    if payload.input_tokens > MAX_TOKEN_VALUE
+        || payload.output_tokens > MAX_TOKEN_VALUE
+        || payload.cache_creation_input_tokens > MAX_TOKEN_VALUE
+        || payload.cache_read_input_tokens > MAX_TOKEN_VALUE
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "token counts exceed maximum allowed value".to_string(),
+        );
+    }
 
     match state.storage.store_token_snapshot(&payload) {
         Ok(()) => {
@@ -160,7 +179,273 @@ async fn report_tokens(
             (StatusCode::OK, "ok".to_string())
         }
         Err(e) => {
-            eprintln!("Failed to store token snapshot: {e}");
+            log::error!("Failed to store token snapshot: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        }
+    }
+}
+
+// --- Learning endpoints ---
+
+fn check_rate_limit_with_max(rate_limiter: &Mutex<VecDeque<Instant>>, max: usize) -> bool {
+    let mut window = rate_limiter.lock();
+    let now = Instant::now();
+    let cutoff = now - std::time::Duration::from_secs(RATE_WINDOW_SECS);
+    while window.front().is_some_and(|t| *t < cutoff) {
+        window.pop_front();
+    }
+    if window.len() >= max {
+        return false;
+    }
+    window.push_back(now);
+    true
+}
+
+async fn post_observation(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ObservationPayload>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized".to_string());
+    }
+    if !check_rate_limit_with_max(&state.obs_rate_limiter, MAX_OBS_REQUESTS) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Rate limit exceeded".to_string(),
+        );
+    }
+    if payload.session_id.is_empty() || payload.session_id.len() > MAX_STRING_LEN {
+        return (StatusCode::BAD_REQUEST, "Invalid session_id".to_string());
+    }
+    if payload.tool_name.is_empty() || payload.tool_name.len() > MAX_STRING_LEN {
+        return (StatusCode::BAD_REQUEST, "Invalid tool_name".to_string());
+    }
+    if payload.hook_phase != "pre" && payload.hook_phase != "post" {
+        return (
+            StatusCode::BAD_REQUEST,
+            "hook_phase must be 'pre' or 'post'".to_string(),
+        );
+    }
+    if payload
+        .tool_input
+        .as_ref()
+        .is_some_and(|s| s.len() > MAX_TOOL_DATA_LEN)
+    {
+        return (StatusCode::BAD_REQUEST, "tool_input too long".to_string());
+    }
+    if payload
+        .tool_output
+        .as_ref()
+        .is_some_and(|s| s.len() > MAX_TOOL_DATA_LEN)
+    {
+        return (StatusCode::BAD_REQUEST, "tool_output too long".to_string());
+    }
+    if payload.cwd.as_ref().is_some_and(|c| c.len() > MAX_CWD_LEN) {
+        return (StatusCode::BAD_REQUEST, "cwd too long".to_string());
+    }
+
+    match state.storage.store_observation(&payload) {
+        Ok(()) => (StatusCode::OK, "ok".to_string()),
+        Err(e) => {
+            log::error!("Failed to store observation: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error".to_string(),
+            )
+        }
+    }
+}
+
+async fn get_observations(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .min(500);
+
+    match state.storage.get_recent_observations(limit) {
+        Ok(observations) => (StatusCode::OK, Json(serde_json::json!(observations))),
+        Err(e) => {
+            log::error!("Failed to get observations: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+        }
+    }
+}
+
+async fn post_session_end(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SessionEndPayload>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized".to_string());
+    }
+    if payload.session_id.is_empty() || payload.session_id.len() > MAX_STRING_LEN {
+        return (StatusCode::BAD_REQUEST, "Invalid session_id".to_string());
+    }
+    if payload
+        .transcript_path
+        .as_ref()
+        .is_some_and(|p| p.len() > MAX_CWD_LEN)
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "transcript_path too long".to_string(),
+        );
+    }
+    if payload.cwd.as_ref().is_some_and(|c| c.len() > MAX_CWD_LEN) {
+        return (StatusCode::BAD_REQUEST, "cwd too long".to_string());
+    }
+
+    // Check if learning is enabled and trigger mode includes session-end
+    let enabled = state
+        .storage
+        .get_setting("learning.enabled")
+        .ok()
+        .flatten()
+        .is_some_and(|v| v == "true");
+    let trigger_mode = state
+        .storage
+        .get_setting("learning.trigger_mode")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    if enabled && (trigger_mode == "session-end" || trigger_mode.contains("session-end")) {
+        let _ = state
+            .app_handle
+            .emit("learning-session-end", &payload.session_id);
+    }
+
+    (StatusCode::OK, "ok".to_string())
+}
+
+async fn get_learning_status(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+
+    match state.storage.get_learning_status() {
+        Ok(status) => (StatusCode::OK, Json(serde_json::json!(status))),
+        Err(e) => {
+            log::error!("Failed to get learning status: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+        }
+    }
+}
+
+async fn post_learning_run(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LearningRunPayload>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+    if payload.trigger_mode.is_empty() || payload.trigger_mode.len() > MAX_STRING_LEN {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid trigger_mode"})),
+        );
+    }
+
+    match state.storage.store_learning_run(&payload) {
+        Ok(id) => {
+            let _ = state.app_handle.emit("learning-updated", ());
+            (StatusCode::OK, Json(serde_json::json!({"id": id})))
+        }
+        Err(e) => {
+            log::error!("Failed to store learning run: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+        }
+    }
+}
+
+async fn get_learning_runs(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+
+    let limit: i64 = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20)
+        .min(100);
+
+    match state.storage.get_learning_runs(limit) {
+        Ok(runs) => (StatusCode::OK, Json(serde_json::json!(runs))),
+        Err(e) => {
+            log::error!("Failed to get learning runs: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+        }
+    }
+}
+
+async fn post_learned_rule(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(payload): Json<LearnedRulePayload>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized".to_string());
+    }
+    if payload.name.is_empty() || payload.name.len() > MAX_STRING_LEN {
+        return (StatusCode::BAD_REQUEST, "Invalid name".to_string());
+    }
+    if payload.file_path.is_empty() || payload.file_path.len() > MAX_CWD_LEN {
+        return (StatusCode::BAD_REQUEST, "Invalid file_path".to_string());
+    }
+
+    match state.storage.store_learned_rule(&payload) {
+        Ok(()) => {
+            let _ = state.app_handle.emit("learning-updated", ());
+            (StatusCode::OK, "ok".to_string())
+        }
+        Err(e) => {
+            log::error!("Failed to store learned rule: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error".to_string(),

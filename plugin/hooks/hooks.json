@@ -1,5 +1,21 @@
 {
   "hooks": {
+    "PreToolUse": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/observe.js",
+        "timeout": 3
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/observe.js",
+        "timeout": 3
+      }]
+    }],
     "Stop": [
       {
         "matcher": "",
@@ -7,6 +23,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/report-tokens.sh"
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/session-end-learn.js",
+            "timeout": 5
           }
         ]
       }

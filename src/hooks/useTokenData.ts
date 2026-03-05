@@ -66,12 +66,15 @@ export function useTokenData(
 
   // Auto-refresh when new token data arrives via Tauri event
   useEffect(() => {
+    let mounted = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unlistenPromise = listen("tokens-updated", () => {
+      if (!mounted) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(fetchData, REFRESH_DEBOUNCE_MS);
     });
     return () => {
+      mounted = false;
       if (timer) clearTimeout(timer);
       unlistenPromise.then((fn) => fn());
     };

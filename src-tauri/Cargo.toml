@@ -1,6 +1,6 @@
 [package]
 name = "claude-usage"
-version = "0.2.2"
+version = "0.0.0-injected-by-ci"
 edition = "2024"
 
 [lib]
@@ -20,8 +20,12 @@ dirs = "6"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 axum = "0.8"
-tokio = { version = "1", features = ["net"] }
+tokio = { version = "1", features = ["net", "sync"] }
 tauri-plugin-updater = "2.10.0"
 tauri-plugin-process = "2"
+tauri-plugin-log = "2"
+log = "0.4"
 rand = "0.8"
 hex = "0.4"
+subtle = "2"
+parking_lot = "0.12"

@@ -1,0 +1,135 @@
+import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { useToast } from "./useToast";
+import type {
+  LearningSettings,
+  LearnedRule,
+  LearningRun,
+  ToolCount,
+} from "../types";
+
+export function useLearningData() {
+  const { toast } = useToast();
+  const [settings, setSettings] = useState<LearningSettings>({
+    enabled: false,
+    trigger_mode: "on-demand",
+    periodic_minutes: 180,
+    min_observations: 50,
+    min_confidence: 0.95,
+  });
+  const [rules, setRules] = useState<LearnedRule[]>([]);
+  const [runs, setRuns] = useState<LearningRun[]>([]);
+  const [observationCount, setObservationCount] = useState(0);
+  const [unanalyzedCount, setUnanalyzedCount] = useState(0);
+  const [topTools, setTopTools] = useState<ToolCount[]>([]);
+  const [sparkline, setSparkline] = useState<number[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, r, ru, oc, uc, tt, sp] = await Promise.all([
+        invoke<LearningSettings>("get_learning_settings"),
+        invoke<LearnedRule[]>("get_learned_rules"),
+        invoke<LearningRun[]>("get_learning_runs", { limit: 10 }),
+        invoke<number>("get_observation_count"),
+        invoke<number>("get_unanalyzed_observation_count"),
+        invoke<ToolCount[]>("get_top_tools", { limit: 5, days: 30 }),
+        invoke<number[]>("get_observation_sparkline"),
+      ]);
+      setSettings(s);
+      setRules(r);
+      setRuns(ru);
+      setObservationCount(oc);
+      setUnanalyzedCount(uc);
+      setTopTools(tt);
+      setSparkline(sp);
+    } catch (e) {
+      toast("error", `Failed to load learning data: ${e}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 10_000);
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  useEffect(() => {
+    const unlisten = listen("learning-updated", () => {
+      refresh();
+      setAnalyzing(false);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [refresh]);
+
+  useEffect(() => {
+    const unlisten = listen<string>("learning-log", (event) => {
+      setLiveLogs((prev) => [...prev, event.payload]);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  const updateSettings = useCallback(
+    async (next: LearningSettings) => {
+      setSettings(next);
+      try {
+        await invoke("set_learning_settings", { settings: next });
+      } catch (e) {
+        toast("error", `Failed to save learning settings: ${e}`);
+        refresh();
+      }
+    },
+    [refresh, toast],
+  );
+
+  const triggerAnalysis = useCallback(async () => {
+    setAnalyzing(true);
+    setLiveLogs([]);
+    try {
+      await invoke("trigger_analysis");
+      await refresh();
+    } catch (e) {
+      toast("warning", String(e));
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [refresh, toast]);
+
+  const deleteRule = useCallback(
+    async (name: string) => {
+      try {
+        await invoke("delete_learned_rule", { name });
+        await refresh();
+      } catch (e) {
+        toast("error", `Failed to delete rule: ${e}`);
+      }
+    },
+    [refresh, toast],
+  );
+
+  return {
+    settings,
+    rules,
+    runs,
+    observationCount,
+    unanalyzedCount,
+    topTools,
+    sparkline,
+    analyzing,
+    liveLogs,
+    loading,
+    updateSettings,
+    triggerAnalysis,
+    deleteRule,
+    refresh,
+  };
+}

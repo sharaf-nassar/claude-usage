@@ -32,7 +32,7 @@ pub fn load_or_create_secret() -> Result<String, String> {
         if secret.len() >= 32 {
             return Ok(secret);
         }
-        eprintln!("Auth secret file too short, regenerating");
+        log::warn!("Auth secret file too short, regenerating");
     }
 
     let mut bytes = [0u8; 32];
@@ -49,6 +49,6 @@ pub fn load_or_create_secret() -> Result<String, String> {
     file.write_all(secret.as_bytes())
         .map_err(|e| format!("failed to write auth secret: {e}"))?;
 
-    eprintln!("Generated new auth secret at {}", path.display());
+    log::info!("Generated new auth secret at {}", path.display());
     Ok(secret)
 }

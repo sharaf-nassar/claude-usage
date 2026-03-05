@@ -1,11 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  RangeType,
-  DataPoint,
-  BucketStats,
-  UsageBucket,
-} from "../types";
+import type { RangeType, DataPoint, BucketStats, UsageBucket } from "../types";
 
 const RANGES: Record<RangeType, { label: string; days: number }> = {
   "1h": { label: "1 Hour", days: 1 },
@@ -21,7 +16,6 @@ export function useAnalyticsData(
 ) {
   const [history, setHistory] = useState<DataPoint[]>([]);
   const [stats, setStats] = useState<BucketStats | null>(null);
-  const [allStats, setAllStats] = useState<BucketStats[]>([]);
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,18 +41,10 @@ export function useAnalyticsData(
       setSnapshotCount(countData);
 
       if (buckets && buckets.length > 0) {
-        const bucketsJson = JSON.stringify(
-          buckets.map((b) => ({
-            label: b.label,
-            utilization: b.utilization,
-            resets_at: b.resets_at ?? null,
-          })),
-        );
-
-        const [statsData, allStatsData] = await Promise.all([
-          invoke<BucketStats>("get_usage_stats", { bucket, days }),
-          invoke<BucketStats[]>("get_all_bucket_stats", { bucketsJson, days }),
-        ]);
+        const statsData = await invoke<BucketStats>("get_usage_stats", {
+          bucket,
+          days,
+        });
 
         const currentBucket = buckets.find((b) => b.label === bucket);
         if (currentBucket && statsData) {
@@ -66,7 +52,6 @@ export function useAnalyticsData(
         } else {
           setStats(statsData);
         }
-        setAllStats(allStatsData);
       }
     } catch (e) {
       console.error("Analytics fetch error:", e);
@@ -84,7 +69,6 @@ export function useAnalyticsData(
   return {
     history,
     stats,
-    allStats,
     snapshotCount,
     loading,
     error,

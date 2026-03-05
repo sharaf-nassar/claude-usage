@@ -4,7 +4,15 @@ import { useTokenData } from "../../hooks/useTokenData";
 import UsageChart from "./UsageChart";
 import BreakdownPanel from "./BreakdownPanel";
 import { getColor, TrendArrow } from "./shared";
-import type { RangeType, UsageBucket, BreakdownSelection } from "../../types";
+import { formatTokenCount } from "../../utils/tokens";
+import type { RangeType, UsageBucket, BreakdownSelection, TokenStats } from "../../types";
+
+function cacheColor(stats: TokenStats): string {
+  const rate = stats.total_cache_read / (stats.total_input + stats.total_cache_read);
+  if (rate >= 0.6) return "#22C55E";
+  if (rate >= 0.3) return "#EAB308";
+  return "#EF4444";
+}
 
 interface BucketDropdownProps {
   value: string;
@@ -131,6 +139,8 @@ interface AnalyticsViewProps {
   currentBuckets: UsageBucket[];
 }
 
+const BREAKDOWN_COLLAPSED_KEY = "claude-usage-breakdown-collapsed";
+
 function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
   const [range, setRange] = useState<RangeType>("24h");
   const [selectedBucket, setSelectedBucket] = useState(
@@ -138,6 +148,13 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
   );
   const [breakdownSelection, setBreakdownSelection] =
     useState<BreakdownSelection | null>(null);
+  const [breakdownCollapsed, setBreakdownCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(BREAKDOWN_COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
 
   const breakdownDays = RANGE_DAYS[range] ?? 1;
   const hasSelection = breakdownSelection !== null;
@@ -148,7 +165,7 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
     : range;
 
   const bucketsKey = (currentBuckets ?? [])
-    .map((b) => `${b.label}:${b.utilization}`)
+    .map((b) => `${b.label}:${b.utilization}:${b.resets_at ?? ""}`)
     .join(",");
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- bucketsKey is an intentional stabilizer for currentBuckets
@@ -166,7 +183,7 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
     breakdownSelection?.type === "session" ? breakdownSelection.key : null;
   const tokenCwd =
     breakdownSelection?.type === "project" ? breakdownSelection.key : null;
-  const { history: tokenHistory } = useTokenData(
+  const { history: tokenHistory, stats: tokenStats } = useTokenData(
     tokenRange,
     tokenHostname,
     tokenSessionId,
@@ -187,11 +204,14 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"
+            aria-hidden="true"
           >
             <circle cx="12" cy="12" r="10" />
             <polyline points="12 6 12 12 16 14" />
           </svg>
-          <div className="analytics-empty-title">Collecting usage data...</div>
+          <div className="analytics-empty-title">
+            {"Collecting usage data\u2026"}
+          </div>
           <div className="analytics-empty-desc">
             Analytics will appear here once enough data has been recorded. Data
             is captured every 60 seconds.
@@ -209,6 +229,7 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
             <button
               key={r}
               className={`range-tab${range === r ? " active" : ""}`}
+              aria-pressed={range === r}
               onClick={() => setRange(r)}
             >
               {RANGE_LABELS[r]}
@@ -240,6 +261,26 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
             </span>
           </div>
         )}
+        {tokenStats && tokenStats.total_tokens > 0 && (
+          <div className="inline-stats token-stats">
+            <span className="inline-stat">
+              <span className="inline-stat-label">In</span>
+              <span className="inline-stat-value">{formatTokenCount(tokenStats.total_input)}</span>
+            </span>
+            <span className="inline-stat">
+              <span className="inline-stat-label">Out</span>
+              <span className="inline-stat-value">{formatTokenCount(tokenStats.total_output)}</span>
+            </span>
+            {(tokenStats.total_input + tokenStats.total_cache_read) > 0 && (
+              <span className="inline-stat">
+                <span className="inline-stat-label">Cache</span>
+                <span className="inline-stat-value" style={{ color: cacheColor(tokenStats) }}>
+                  {Math.round(tokenStats.total_cache_read / (tokenStats.total_input + tokenStats.total_cache_read) * 100)}%
+                </span>
+              </span>
+            )}
+          </div>
+        )}
         <BucketDropdown
           value={selectedBucket}
           options={(currentBuckets ?? []).map((b) => b.label)}
@@ -249,7 +290,6 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
 
       {error && (
         <div className="analytics-error" role="alert">
-          {void console.error("Analytics error:", error)}
           Failed to load analytics
         </div>
       )}
@@ -292,11 +332,32 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
               tokenData={tokenHistory}
             />
           </div>
-          <BreakdownPanel
-            days={RANGE_DAYS[range] ?? 1}
-            selection={breakdownSelection}
-            onSelect={setBreakdownSelection}
-          />
+          <div className="breakdown-collapsible">
+            <button
+              className="breakdown-collapse-toggle"
+              onClick={() => {
+                const next = !breakdownCollapsed;
+                setBreakdownCollapsed(next);
+                try {
+                  localStorage.setItem(BREAKDOWN_COLLAPSED_KEY, String(next));
+                } catch { /* ignore */ }
+              }}
+              aria-expanded={!breakdownCollapsed}
+              aria-label={breakdownCollapsed ? "Show breakdown" : "Hide breakdown"}
+            >
+              <span className="breakdown-collapse-chevron">
+                {breakdownCollapsed ? "\u25B8" : "\u25BE"}
+              </span>
+              <span className="section-title" style={{ marginBottom: 0 }}>Breakdown</span>
+            </button>
+            {!breakdownCollapsed && (
+              <BreakdownPanel
+                days={RANGE_DAYS[range] ?? 1}
+                selection={breakdownSelection}
+                onSelect={setBreakdownSelection}
+              />
+            )}
+          </div>
         </>
       )}
     </div>

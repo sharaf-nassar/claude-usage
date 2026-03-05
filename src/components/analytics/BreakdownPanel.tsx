@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useBreakdownData } from "../../hooks/useBreakdownData";
+import { useToast } from "../../hooks/useToast";
 import { formatTokenCount } from "../../utils/tokens";
 import type {
   BreakdownMode,
@@ -21,6 +22,17 @@ function formatRelativeTime(isoString: string): string {
   if (diffHr < 24) return `${diffHr}h ago`;
   const diffDays = Math.floor(diffHr / 24);
   return `${diffDays}d ago`;
+}
+
+function formatDuration(firstSeen: string, lastActive: string): string {
+  const diffMs = new Date(lastActive).getTime() - new Date(firstSeen).getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return "< 1m";
+  if (diffMin < 60) return `${diffMin}m`;
+  const hours = Math.floor(diffMin / 60);
+  const mins = diffMin % 60;
+  if (hours < 24) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function projectName(path: string | null | undefined): string | null {
@@ -70,6 +82,7 @@ interface BreakdownPanelProps {
 }
 
 function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
+  const { toast } = useToast();
   const [mode, setMode] = useState<BreakdownMode>("hosts");
   const [page, setPage] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -150,11 +163,16 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
     const command = commandMap[selection.type];
     const args = argsMap[selection.type];
 
-    await invoke(command, args);
-    onSelect(null);
-    refresh();
-    setDeleting(false);
-  }, [selection, confirmDelete, resetConfirm, onSelect, refresh]);
+    try {
+      await invoke(command, args);
+      onSelect(null);
+      refresh();
+    } catch (err) {
+      toast("error", `Failed to delete ${selection.type} data: ${err}`);
+    } finally {
+      setDeleting(false);
+    }
+  }, [selection, confirmDelete, resetConfirm, onSelect, refresh, toast]);
 
   return (
     <div className="breakdown-panel">
@@ -164,6 +182,7 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
             <button
               key={m}
               className={`range-tab${mode === m ? " active" : ""}`}
+              aria-pressed={mode === m}
               onClick={() => handleModeChange(m)}
             >
               {MODE_LABELS[m]}
@@ -237,7 +256,7 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
       {error && <div className="analytics-error">{error}</div>}
 
       {loading ? (
-        <div className="breakdown-empty">Loading...</div>
+        <div className="breakdown-empty">{"Loading\u2026"}</div>
       ) : data.length === 0 ? (
         <div className="breakdown-empty">No {mode} data yet</div>
       ) : (
@@ -270,6 +289,9 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
                   </span>
                   <span className="breakdown-turns">
                     {row.turn_count} turns
+                    {row.turn_count > 0 && (
+                      <span className="breakdown-tpt"> · {formatTokenCount(Math.round(row.total_tokens / row.turn_count))}/t</span>
+                    )}
                   </span>
                   <span className="breakdown-time">
                     {formatRelativeTime(row.last_active)}
@@ -301,6 +323,9 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
                     </span>
                     <span className="breakdown-turns">
                       {row.turn_count} turns
+                      {row.turn_count > 0 && (
+                        <span className="breakdown-tpt"> · {formatTokenCount(Math.round(row.total_tokens / row.turn_count))}/t</span>
+                      )}
                       <span className="breakdown-session-count">
                         {row.session_count} sess
                       </span>
@@ -344,9 +369,14 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
                     </span>
                     <span className="breakdown-turns">
                       {row.turn_count} turns
+                      {row.turn_count > 0 && (
+                        <span className="breakdown-tpt"> · {formatTokenCount(Math.round(row.total_tokens / row.turn_count))}/t</span>
+                      )}
                     </span>
                     <span className="breakdown-time">
-                      {formatRelativeTime(row.last_active)}
+                      {Date.now() - new Date(row.last_active).getTime() < 300000
+                        ? "active"
+                        : formatDuration(row.first_seen, row.last_active)}
                     </span>
                   </div>
                 ))}

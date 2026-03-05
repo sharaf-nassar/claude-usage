@@ -13,6 +13,7 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 - **Token tracking** — per-turn input/output/cache token counts via Claude Code hook
 - **Multi-host support** — remote Claude Code instances can report usage over the network
 - Token sparkline in the live view and dual-axis chart overlay in analytics
+- **Learning panel** — integrated side panel that shows learned usage rules, observation stats, and analysis history (toggle from the titlebar)
 - Always-on-top floating window with semi-transparent dark theme
 - Custom titlebar with drag-to-move
 - Remembers window position and size across restarts
@@ -145,9 +146,12 @@ claude /login
 
 No additional configuration is needed — the widget starts tracking utilization immediately.
 
-## Token Tracking (Optional)
+## Token Tracking & Learning (Optional)
 
-The widget includes an HTTP server (port `19876`) that receives per-turn token usage data from Claude Code via a Stop hook. This enables the token sparkline in the live view and the token overlay on the analytics chart.
+The widget includes an HTTP server (port `19876`) that receives data from Claude Code via hooks. The plugin enables two features:
+
+- **Token tracking** — per-turn input/output/cache token counts, powering the sparkline in the live view and the token overlay on the analytics chart
+- **Learning** — observes tool usage patterns across sessions and can analyze them to extract reusable rules (stored in `~/.claude/rules/learned/`)
 
 ### Install the hook (Claude Code plugin)
 
@@ -169,7 +173,20 @@ The widget includes an HTTP server (port `19876`) that receives per-turn token u
 /claude-usage-hook:setup
 ```
 
-The setup skill will ask where the widget is running (this machine or a remote IP) and save the config. After setup, every Claude Code turn will report token counts to the widget.
+The setup skill will ask where the widget is running (this machine or a remote IP) and save the config. After setup, every Claude Code turn will report token counts and tool observations to the widget.
+
+### Using the learning panel
+
+Once the plugin is installed and observations are being collected:
+
+1. Click the **✦ button** in the titlebar to open the learning panel
+2. Toggle learning **ON** with the switch in the panel header
+3. Choose a trigger mode:
+   - **On-demand** — click "Analyze" in the panel to run analysis manually
+   - **Session-end** — automatically analyzes after each Claude Code session ends
+   - **Periodic** — runs analysis on a configurable interval
+4. Analysis extracts patterns from observations and creates rule files in `~/.claude/rules/learned/`
+5. Learned rules appear as cards in the panel with confidence scores and domain tags
 
 ### Manual install (alternative)
 
@@ -212,36 +229,49 @@ cargo tauri dev
 - **Drag any edge or corner** to resize
 - **Right-click** for a context menu (Refresh / Quit)
 - **Gear icon** to switch between time display modes
+- **Star button (✦)** to toggle the learning panel — the window expands rightward to show it and shrinks back when closed
 
 ## Project structure
 
 ```
 src/                          # React frontend
-  main.jsx                    # Entry point
-  App.jsx                     # Main app component
+  main.tsx                    # Entry point
+  App.tsx                     # Main app component with learning sidebar
   components/
-    TitleBar.jsx              # Custom minimal titlebar (drag + close)
-    UsageRow.jsx              # Usage row with progress bar + token sparkline
-    UsageDisplay.jsx          # Container for all rows
+    TitleBar.tsx              # Custom minimal titlebar (drag + close + learning toggle)
+    UsageRow.tsx              # Usage row with progress bar + token sparkline
+    UsageDisplay.tsx          # Container for all rows
     analytics/
-      AnalyticsView.jsx       # Analytics tab with charts and stats
-      UsageChart.jsx          # Dual-axis chart (utilization + tokens)
-      StatsPanel.jsx          # Bucket statistics cards
-      BucketOverview.jsx      # All-buckets summary with sparklines
+      AnalyticsView.tsx       # Analytics tab with charts and stats
+      UsageChart.tsx          # Dual-axis chart (utilization + tokens)
+      StatsPanel.tsx          # Bucket statistics cards
+      BucketOverview.tsx      # All-buckets summary with sparklines
+    learning/
+      LearningTitleBar.tsx    # Learning panel header with ON/OFF toggle
+      StatusStrip.tsx         # Observation stats and sparkline
+      TriggerSettings.tsx     # Analysis trigger configuration
+      RuleCard.tsx            # Individual learned rule display
+      DomainBreakdown.tsx     # Rules grouped by domain
+      RunHistory.tsx          # Past analysis run log
+  windows/
+    LearningWindow.tsx        # Learning panel (integrated sidebar)
   hooks/
-    useAnalyticsData.js       # Fetches utilization history and stats
-    useTokenData.js           # Fetches token history, stats, hostnames
+    useAnalyticsData.ts       # Fetches utilization history and stats
+    useTokenData.ts           # Fetches token history, stats, hostnames
+    useLearningData.ts        # Fetches learning rules, runs, observations
   utils/
-    tokens.js                 # Token count formatting (1.2k, 1.5M)
+    tokens.ts                 # Token count formatting (1.2k, 1.5M)
   styles/
     index.css                 # Global styles + dark theme
+    learning.css              # Learning panel styles
 src-tauri/                    # Rust backend
   src/
     main.rs                   # Tauri entry point
     lib.rs                    # IPC commands and server startup
     config.rs                 # Credential loading and token refresh
     fetcher.rs                # Usage API calls with retry logic
-    models.rs                 # Data models (usage buckets + token types)
+    learning.rs               # Learning analysis spawner
+    models.rs                 # Data models (usage buckets + token + learning types)
     storage.rs                # SQLite storage with aggregation
     server.rs                 # axum HTTP server for token reporting
   tauri.conf.json             # Tauri window and build configuration

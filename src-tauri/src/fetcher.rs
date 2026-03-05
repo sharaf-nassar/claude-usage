@@ -1,6 +1,5 @@
-use crate::config::{read_access_token, refresh_access_token};
+use crate::config::{claude_user_agent, http_client, read_access_token, refresh_access_token};
 use crate::models::{UsageBucket, UsageData};
-use std::sync::OnceLock;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 
@@ -14,17 +13,12 @@ const BUCKET_KEYS: &[(&str, &str)] = &[
     ("extra_usage", "Extra"),
 ];
 
-static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-fn http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(reqwest::Client::new)
-}
-
 async fn do_fetch(token: &str) -> Result<reqwest::Response, reqwest::Error> {
     http_client()
         .get(USAGE_URL)
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
+        .header("User-Agent", claude_user_agent())
         .header("Authorization", format!("Bearer {token}"))
         .header("anthropic-beta", "oauth-2025-04-20")
         .send()
