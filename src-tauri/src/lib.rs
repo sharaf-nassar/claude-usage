@@ -408,11 +408,14 @@ pub fn run() {
 
             // Spawn the HTTP token reporting server (needs AppHandle for events)
             if let Some(storage) = STORAGE.get() {
-                if let Some(idx) = session_index {
+                {
                     let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(server::start_server(storage, secret, handle, idx));
-                } else {
-                    log::error!("Session index not available; HTTP server not started");
+                    tauri::async_runtime::spawn(server::start_server(
+                        storage,
+                        secret,
+                        handle,
+                        session_index,
+                    ));
                 }
 
                 // Periodic aggregation/cleanup every hour

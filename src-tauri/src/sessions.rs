@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tantivy::collector::{FacetCollector, TopDocs};
+use tantivy::collector::{Count, FacetCollector, TopDocs};
 use tantivy::query::{BooleanQuery, Occur, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::*;
 use tantivy::snippet::SnippetGenerator;
@@ -324,7 +324,14 @@ impl SessionIndex {
     // -------------------------------------------------------------------
 
     /// Search the index with a query string and optional filters.
-    pub fn search(&self, filters: &SearchFilters) -> Result<SearchResults, String> {
+    pub fn search(
+        &self,
+        query: &str,
+        filters: &SearchFilters,
+        page: usize,
+        page_size: usize,
+    ) -> Result<SearchResults, String> {
+        let start = std::time::Instant::now();
         let searcher = self.searcher();
         let f = &self.fields;
 
@@ -333,7 +340,7 @@ impl SessionIndex {
             QueryParser::for_index(&self.index, vec![f.content, f.tools_used, f.files_modified]);
         parser.set_conjunction_by_default();
 
-        let (text_query, _errors) = parser.parse_query_lenient(&filters.query);
+        let (text_query, _errors) = parser.parse_query_lenient(query);
 
         // Combine with filter clauses via BooleanQuery
         let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> =
@@ -379,20 +386,32 @@ impl SessionIndex {
 
         // Date range filter
         if filters.date_from.is_some() || filters.date_to.is_some() {
+            let parse_date = |s: &str| -> Option<DateTime> {
+                // Try RFC3339 first, then plain date
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| DateTime::from_timestamp_secs(dt.timestamp()))
+                    .ok()
+                    .or_else(|| {
+                        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                            .map(|d| {
+                                DateTime::from_timestamp_secs(
+                                    d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
+                                )
+                            })
+                            .ok()
+                    })
+            };
+
             let lower = match &filters.date_from {
                 Some(from_str) => {
-                    let dt = chrono::DateTime::parse_from_rfc3339(from_str)
-                        .map(|dt| DateTime::from_timestamp_secs(dt.timestamp()))
-                        .unwrap_or(DateTime::MIN);
+                    let dt = parse_date(from_str).unwrap_or(DateTime::MIN);
                     Bound::Included(Term::from_field_date(f.timestamp, dt))
                 }
                 None => Bound::Unbounded,
             };
             let upper = match &filters.date_to {
                 Some(to_str) => {
-                    let dt = chrono::DateTime::parse_from_rfc3339(to_str)
-                        .map(|dt| DateTime::from_timestamp_secs(dt.timestamp()))
-                        .unwrap_or(DateTime::MAX);
+                    let dt = parse_date(to_str).unwrap_or(DateTime::MAX);
                     Bound::Included(Term::from_field_date(f.timestamp, dt))
                 }
                 None => Bound::Unbounded,
@@ -401,11 +420,20 @@ impl SessionIndex {
         }
 
         let combined = BooleanQuery::new(clauses);
-        let limit = filters.limit.unwrap_or(20) as usize;
-        let offset = filters.offset.unwrap_or(0) as usize;
+        let limit = page_size.min(100);
+        let offset = page * page_size;
 
-        let top_docs = searcher
-            .search(&combined, &TopDocs::with_limit(limit).and_offset(offset))
+        // Order by timestamp descending; also count total hits
+        let (top_docs, total_count) = searcher
+            .search(
+                &combined,
+                &(
+                    TopDocs::with_limit(limit)
+                        .and_offset(offset)
+                        .order_by_fast_field::<DateTime>("timestamp", tantivy::Order::Desc),
+                    Count,
+                ),
+            )
             .map_err(|e| format!("Search error: {e}"))?;
 
         // Snippet generator for content field
@@ -413,7 +441,7 @@ impl SessionIndex {
             .map_err(|e| format!("Snippet generator error: {e}"))?;
 
         let mut hits = Vec::with_capacity(top_docs.len());
-        for (score, doc_addr) in &top_docs {
+        for (_sort_value, doc_addr) in &top_docs {
             let doc: TantivyDocument = searcher
                 .doc(*doc_addr)
                 .map_err(|e| format!("Doc retrieval: {e}"))?;
@@ -464,13 +492,14 @@ impl SessionIndex {
                 git_branch: get_text(f.git_branch),
                 tools_used: get_text(f.tools_used),
                 files_modified: get_text(f.files_modified),
-                score: *score,
+                score: 0.0,
             });
         }
 
         Ok(SearchResults {
             hits,
-            total: top_docs.len() as u64,
+            total_hits: total_count as u64,
+            query_time_ms: start.elapsed().as_millis() as u64,
         })
     }
 
@@ -498,7 +527,7 @@ impl SessionIndex {
         let projects = project_counts
             .get("/")
             .map(|(facet, count)| FacetCount {
-                label: facet
+                name: facet
                     .to_string()
                     .strip_prefix('/')
                     .unwrap_or(&facet.to_string())
@@ -510,7 +539,7 @@ impl SessionIndex {
         let hosts = host_counts
             .get("/")
             .map(|(facet, count)| FacetCount {
-                label: facet
+                name: facet
                     .to_string()
                     .strip_prefix('/')
                     .unwrap_or(&facet.to_string())
@@ -541,6 +570,7 @@ impl SessionIndex {
 
         // Find the JSONL file matching this session_id
         let mut jsonl_path: Option<PathBuf> = None;
+        let mut project_name = String::new();
         if projects_dir.exists() {
             for project_entry in std::fs::read_dir(&projects_dir)
                 .map_err(|e| format!("Read projects: {e}"))?
@@ -550,6 +580,12 @@ impl SessionIndex {
                 let candidate = project_entry.path().join(format!("{session_id}.jsonl"));
                 if candidate.exists() {
                     jsonl_path = Some(candidate);
+                    let dir_name = project_entry
+                        .file_name()
+                        .to_str()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    project_name = Self::project_display_name(&dir_name);
                     break;
                 }
             }
@@ -572,16 +608,17 @@ impl SessionIndex {
         let context_messages: Vec<ContextMessage> = messages[start..end]
             .iter()
             .map(|m| ContextMessage {
-                uuid: m.uuid.clone(),
+                message_id: m.uuid.clone(),
                 role: m.role.clone(),
                 content: m.content.clone(),
                 timestamp: m.timestamp.clone(),
-                is_target: m.uuid == message_id,
+                is_match: m.uuid == message_id,
             })
             .collect();
 
         Ok(SessionContext {
             session_id: session_id.to_string(),
+            project: project_name,
             messages: context_messages,
         })
     }
@@ -610,25 +647,23 @@ pub struct SearchHit {
 #[derive(Serialize, Clone, Debug)]
 pub struct SearchResults {
     pub hits: Vec<SearchHit>,
-    pub total: u64,
+    pub total_hits: u64,
+    pub query_time_ms: u64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, Default)]
 pub struct SearchFilters {
-    pub query: String,
     pub project: Option<String>,
     pub host: Option<String>,
     pub role: Option<String>,
     pub git_branch: Option<String>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
 }
 
 #[derive(Serialize, Clone, Debug)]
 pub struct FacetCount {
-    pub label: String,
+    pub name: String,
     pub count: u64,
 }
 
@@ -640,16 +675,17 @@ pub struct SearchFacets {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ContextMessage {
-    pub uuid: String,
+    pub message_id: String,
     pub role: String,
     pub content: String,
     pub timestamp: String,
-    pub is_target: bool,
+    pub is_match: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SessionContext {
     pub session_id: String,
+    pub project: String,
     pub messages: Vec<ContextMessage>,
 }
 
@@ -812,23 +848,26 @@ pub struct SessionIndexState(pub Arc<SessionIndex>);
 
 #[tauri::command]
 pub async fn search_sessions(
+    query: String,
     filters: SearchFilters,
+    page: usize,
+    page_size: usize,
     state: tauri::State<'_, SessionIndexState>,
 ) -> Result<SearchResults, String> {
     let idx = state.0.clone();
-    crate::run_blocking(move || idx.search(&filters))
+    crate::run_blocking(move || idx.search(&query, &filters, page, page_size))
 }
 
 #[tauri::command]
 pub async fn get_session_context(
     session_id: String,
-    message_id: String,
+    around_message_id: String,
     window: Option<u32>,
     state: tauri::State<'_, SessionIndexState>,
 ) -> Result<SessionContext, String> {
     let idx = state.0.clone();
     let w = window.unwrap_or(5) as usize;
-    crate::run_blocking(move || idx.get_context(&session_id, &message_id, w))
+    crate::run_blocking(move || idx.get_context(&session_id, &around_message_id, w))
 }
 
 #[tauri::command]

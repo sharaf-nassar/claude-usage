@@ -44,7 +44,7 @@ struct ServerState {
     obs_rate_limiter: Mutex<VecDeque<Instant>>,
     session_rate_limiter: Mutex<VecDeque<Instant>>,
     app_handle: tauri::AppHandle,
-    session_index: Arc<sessions::SessionIndex>,
+    session_index: Option<Arc<sessions::SessionIndex>>,
 }
 
 fn check_auth(headers: &HeaderMap, secret: &str) -> bool {
@@ -83,7 +83,7 @@ pub async fn start_server(
     storage: &'static Storage,
     secret: String,
     app_handle: tauri::AppHandle,
-    session_index: Arc<sessions::SessionIndex>,
+    session_index: Option<Arc<sessions::SessionIndex>>,
 ) {
     let port: u16 = std::env::var("CLAUDE_USAGE_PORT")
         .ok()
@@ -516,7 +516,15 @@ async fn post_session_notify(
         .map(sessions::SessionIndex::project_display_name)
         .unwrap_or_else(|| "unknown".to_string());
 
-    let idx = state.session_index.clone();
+    let idx = match &state.session_index {
+        Some(idx) => idx.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Session index not available".to_string(),
+            );
+        }
+    };
     let result = tokio::task::block_in_place(|| -> Result<usize, String> {
         // Delete existing docs for this session before re-indexing
         {
@@ -613,7 +621,15 @@ async fn post_session_messages(
         })
         .collect();
 
-    let idx = state.session_index.clone();
+    let idx = match &state.session_index {
+        Some(idx) => idx.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Session index not available".to_string(),
+            );
+        }
+    };
     let host = payload.host.clone();
     let project = payload.project.clone();
     let result = tokio::task::block_in_place(|| -> Result<usize, String> {
