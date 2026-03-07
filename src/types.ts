@@ -145,3 +145,59 @@ export interface ToolCount {
   tool_name: string;
   count: number;
 }
+
+// Session search types
+
+export interface SearchFilters {
+  project?: string;
+  host?: string;
+  role?: "user" | "assistant";
+  date_from?: string;
+  date_to?: string;
+  git_branch?: string;
+}
+
+export interface SearchHit {
+  message_id: string;
+  session_id: string;
+  content: string;
+  snippet: string;
+  role: string;
+  project: string;
+  host: string;
+  git_branch: string;
+  timestamp: string;
+  tools_used: string;
+  files_modified: string;
+  score: number;
+}
+
+export interface SearchResults {
+  hits: SearchHit[];
+  total_hits: number;
+  query_time_ms: number;
+}
+
+export interface FacetCount {
+  name: string;
+  count: number;
+}
+
+export interface SearchFacets {
+  projects: FacetCount[];
+  hosts: FacetCount[];
+}
+
+export interface ContextMessage {
+  message_id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  is_match: boolean;
+}
+
+export interface SessionContext {
+  messages: ContextMessage[];
+  session_id: string;
+  project: string;
+}
