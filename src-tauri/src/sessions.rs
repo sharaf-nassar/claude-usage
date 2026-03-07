@@ -158,3 +158,153 @@ impl SessionIndex {
         self.reader.searcher()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Extracted message -- intermediate struct from JSONL parsing
+// ---------------------------------------------------------------------------
+
+pub struct ExtractedMessage {
+    pub uuid: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub timestamp: String,
+    pub git_branch: String,
+    pub tools_used: Vec<String>,
+    pub files_modified: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// JSONL parsing
+// ---------------------------------------------------------------------------
+
+/// Extract indexable messages from a Claude Code JSONL session file.
+/// Only "user" and "assistant" type messages are extracted.
+/// isMeta messages and messages with empty content are skipped.
+pub fn extract_messages_from_jsonl(path: &Path) -> Vec<ExtractedMessage> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to read JSONL {}: {e}", path.display());
+            return Vec::new();
+        }
+    };
+
+    let mut messages = Vec::new();
+
+    for line in contents.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let obj: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let msg_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if msg_type != "user" && msg_type != "assistant" {
+            continue;
+        }
+
+        // Skip isMeta messages
+        if obj.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+
+        let uuid = obj
+            .get("uuid")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let session_id = obj
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let timestamp = obj
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let git_branch = obj
+            .get("gitBranch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let message = match obj.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+
+        let role = message
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or(msg_type)
+            .to_string();
+
+        let content_val = message.get("content");
+
+        let mut text_parts: Vec<String> = Vec::new();
+        let mut tools_used: Vec<String> = Vec::new();
+        let mut files_modified: Vec<String> = Vec::new();
+
+        match content_val {
+            // Content is a plain string
+            Some(serde_json::Value::String(s)) => {
+                text_parts.push(s.clone());
+            }
+            // Content is an array of blocks
+            Some(serde_json::Value::Array(blocks)) => {
+                for block in blocks {
+                    let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match block_type {
+                        "text" => {
+                            if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                text_parts.push(text.to_string());
+                            }
+                        }
+                        "tool_use" => {
+                            // Extract tool name
+                            if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                tools_used.push(name.to_string());
+                            }
+                            // Extract file paths from input
+                            if let Some(input) = block.get("input").and_then(|v| v.as_object()) {
+                                for key in ["file_path", "path", "pattern"] {
+                                    if let Some(val) = input.get(key).and_then(|v| v.as_str())
+                                        && !val.is_empty()
+                                    {
+                                        files_modified.push(val.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        // Skip thinking, tool_result, image blocks
+                        "thinking" | "tool_result" | "image" => {}
+                        _ => {}
+                    }
+                }
+            }
+            _ => continue,
+        }
+
+        let content = text_parts.join("\n");
+        if content.trim().is_empty() && tools_used.is_empty() {
+            continue;
+        }
+
+        messages.push(ExtractedMessage {
+            uuid,
+            session_id,
+            role,
+            content,
+            timestamp,
+            git_branch,
+            tools_used,
+            files_modified,
+        });
+    }
+
+    messages
+}
