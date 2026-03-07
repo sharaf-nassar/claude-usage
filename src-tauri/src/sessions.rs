@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tantivy::schema::*;
-use tantivy::{Index, IndexReader, IndexWriter};
+use tantivy::{DateTime, Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
 // ---------------------------------------------------------------------------
 // Schema fields wrapper
@@ -156,6 +156,162 @@ impl SessionIndex {
     /// Get a fresh Searcher from the reader pool.
     pub fn searcher(&self) -> tantivy::Searcher {
         self.reader.searcher()
+    }
+
+    /// Extract a human-readable project name from a directory-encoded path.
+    /// e.g. "-home-mamba-work-claude-usage" -> "claude-usage"
+    pub fn project_display_name(dir_name: &str) -> String {
+        dir_name
+            .rsplit('-')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(dir_name)
+            .to_string()
+    }
+
+    /// Index a single extracted message into the tantivy index.
+    pub fn index_message(
+        &self,
+        msg: &ExtractedMessage,
+        project_facet: &str,
+        host_facet: &str,
+    ) -> Result<(), String> {
+        let mut doc = TantivyDocument::default();
+
+        doc.add_text(self.fields.message_id, &msg.uuid);
+        doc.add_text(self.fields.session_id, &msg.session_id);
+        doc.add_text(self.fields.content, &msg.content);
+        doc.add_text(self.fields.role, &msg.role);
+        doc.add_text(self.fields.git_branch, &msg.git_branch);
+        doc.add_text(self.fields.tools_used, msg.tools_used.join(" "));
+        doc.add_text(self.fields.files_modified, msg.files_modified.join(" "));
+
+        doc.add_facet(
+            self.fields.project,
+            Facet::from(&format!("/{project_facet}")),
+        );
+        doc.add_facet(self.fields.host, Facet::from(&format!("/{host_facet}")));
+
+        // Parse timestamp as RFC3339 -> tantivy DateTime
+        let ts = if !msg.timestamp.is_empty() {
+            chrono::DateTime::parse_from_rfc3339(&msg.timestamp)
+                .map(|dt| DateTime::from_timestamp_secs(dt.timestamp()))
+                .unwrap_or(DateTime::from_timestamp_secs(0))
+        } else {
+            DateTime::from_timestamp_secs(0)
+        };
+        doc.add_date(self.fields.timestamp, ts);
+
+        let writer = self.writer.lock();
+        writer
+            .add_document(doc)
+            .map_err(|e| format!("Add document: {e}"))?;
+
+        Ok(())
+    }
+
+    /// Scan ~/.claude/projects/*/*.jsonl and index new/modified files.
+    /// Returns the number of newly indexed messages.
+    pub fn startup_scan(&self, app_handle: &tauri::AppHandle) -> Result<usize, String> {
+        use tauri::Emitter;
+
+        let projects_dir = dirs::home_dir()
+            .ok_or("Cannot determine home directory")?
+            .join(".claude")
+            .join("projects");
+
+        if !projects_dir.exists() {
+            log::info!("No ~/.claude/projects directory found, skipping scan");
+            return Ok(0);
+        }
+
+        let mut total_indexed = 0usize;
+        let mut state = self.state.lock();
+
+        // Collect all JSONL files and their mtimes
+        let project_entries: Vec<_> = std::fs::read_dir(&projects_dir)
+            .map_err(|e| format!("Read projects dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+
+        // Detect hostname from system
+        let hostname = std::env::var("HOSTNAME")
+            .or_else(|_| std::env::var("COMPUTERNAME"))
+            .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        for project_entry in &project_entries {
+            let project_dir = project_entry.path();
+            let project_dir_name = project_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+            let project_name = Self::project_display_name(project_dir_name);
+
+            let jsonl_files: Vec<_> = std::fs::read_dir(&project_dir)
+                .map_err(|e| format!("Read project dir: {e}"))?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+                .collect();
+
+            for entry in &jsonl_files {
+                let file_path = entry.path();
+                let file_key = file_path.to_string_lossy().to_string();
+
+                let mtime = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let known_mtime = state.file_mtimes.get(&file_key).copied();
+
+                if known_mtime == Some(mtime) {
+                    // File hasn't changed since last index
+                    continue;
+                }
+
+                // If file was previously indexed but modified, delete old docs
+                if known_mtime.is_some() {
+                    // Extract session_id from filename (UUID.jsonl)
+                    if let Some(session_id) = file_path.file_stem().and_then(|s| s.to_str()) {
+                        let term = Term::from_field_text(self.fields.session_id, session_id);
+                        let writer = self.writer.lock();
+                        writer.delete_term(term);
+                    }
+                }
+
+                // Index messages from this file
+                let messages = extract_messages_from_jsonl(&file_path);
+                for msg in &messages {
+                    if let Err(e) = self.index_message(msg, &project_name, &hostname) {
+                        log::warn!("Failed to index message: {e}");
+                    }
+                }
+
+                total_indexed += messages.len();
+                state.file_mtimes.insert(file_key, mtime);
+            }
+        }
+
+        // Commit all changes
+        if total_indexed > 0 {
+            let mut writer = self.writer.lock();
+            writer.commit().map_err(|e| format!("Commit index: {e}"))?;
+        }
+
+        // Must drop state lock before save_state which acquires it
+        drop(state);
+
+        self.save_state()?;
+
+        log::info!("Session index scan complete: {total_indexed} messages indexed");
+        let _ = app_handle.emit("sessions-index-updated", total_indexed);
+
+        Ok(total_indexed)
     }
 }
 
