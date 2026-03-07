@@ -4,6 +4,8 @@ mod fetcher;
 mod learning;
 mod models;
 mod server;
+#[allow(dead_code)]
+mod sessions;
 mod storage;
 
 use models::{
