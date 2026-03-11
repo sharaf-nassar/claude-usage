@@ -27,12 +27,81 @@ fn sanitize_for_prompt(s: &str) -> String {
         .collect()
 }
 
+/// Truncate a string at a valid UTF-8 char boundary.
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Smart observation compression: extracts key signals instead of naive truncation.
+/// Prioritizes: error messages > file paths > tool outcomes > general content.
+fn compress_observation(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return sanitize_for_prompt(text);
+    }
+
+    let mut signals: Vec<&str> = Vec::new();
+    let mut remaining_budget = max_len;
+
+    // Extract error lines (highest priority)
+    for line in text.lines() {
+        let lower = line.to_lowercase();
+        if lower.contains("error") || lower.contains("failed") || lower.contains("panic") {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && trimmed.len() <= remaining_budget {
+                signals.push(trimmed);
+                remaining_budget = remaining_budget.saturating_sub(trimmed.len() + 2);
+            }
+        }
+    }
+
+    // Extract file paths (second priority)
+    for line in text.lines() {
+        if remaining_budget < 20 {
+            break;
+        }
+        let trimmed = line.trim();
+        if (trimmed.contains('/') || trimmed.contains('\\'))
+            && (trimmed.ends_with(".rs")
+                || trimmed.ends_with(".ts")
+                || trimmed.ends_with(".tsx")
+                || trimmed.ends_with(".js")
+                || trimmed.ends_with(".py")
+                || trimmed.contains("file_path"))
+            && !signals.contains(&trimmed)
+            && trimmed.len() <= remaining_budget
+        {
+            signals.push(trimmed);
+            remaining_budget = remaining_budget.saturating_sub(trimmed.len() + 2);
+        }
+    }
+
+    // Fill remainder with truncated content (UTF-8 safe)
+    if remaining_budget > 50 {
+        let truncated = safe_truncate(text, remaining_budget);
+        let result = format!("{} ... {}", signals.join(" | "), truncated);
+        return sanitize_for_prompt(safe_truncate(&result, max_len));
+    }
+
+    let joined = signals.join(" | ");
+    sanitize_for_prompt(safe_truncate(&joined, max_len))
+}
+
 /// Spawns a background analysis using `claude` CLI with Haiku model.
-/// Called on session-end or periodic timer.
+/// Called on session-end, periodic timer, or on-demand.
+/// When `micro` is true, uses a lower observation threshold and only creates
+/// candidates (never writes .md files), with at most 1 new pattern extracted.
 pub async fn spawn_analysis(
     storage: &'static Storage,
     trigger: &str,
     app: &tauri::AppHandle,
+    micro: bool,
 ) -> Result<(), String> {
     let mut logs: Vec<String> = Vec::new();
 
@@ -46,12 +115,19 @@ pub async fn spawn_analysis(
     }
 
     // 1. Check observation count meets threshold
-    let min_obs: i64 = storage
+    let full_min_obs: i64 = storage
         .get_setting("learning.min_observations")
         .ok()
         .flatten()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
+
+    // Micro-updates use 1/5 of the full threshold, allowing faster candidate creation
+    let min_obs = if micro {
+        (full_min_obs / 5).max(5)
+    } else {
+        full_min_obs
+    };
 
     let min_confidence: f64 = storage
         .get_setting("learning.min_confidence")
@@ -60,9 +136,10 @@ pub async fn spawn_analysis(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.95);
 
-    log::info!("Learning analysis started (trigger={trigger})");
+    let mode_label = if micro { "micro" } else { "full" };
+    log::info!("Learning analysis started (trigger={trigger}, mode={mode_label})");
     run_log!(
-        "Starting analysis (trigger={trigger}, min_obs={min_obs}, min_confidence={min_confidence:.2})"
+        "Starting {mode_label} analysis (trigger={trigger}, min_obs={min_obs}, min_confidence={min_confidence:.2})"
     );
 
     let unanalyzed = storage
@@ -81,8 +158,9 @@ pub async fn spawn_analysis(
     let trigger_mode = trigger.to_string();
 
     // 2. Read unanalyzed observations (only those since last successful run)
+    let obs_limit = if micro { 30 } else { 100 };
     let observations = storage
-        .get_unanalyzed_observations(100)
+        .get_unanalyzed_observations(obs_limit)
         .map_err(|e| format!("Failed to get observations: {e}"))?;
 
     run_log!("Loaded {} observations for analysis", observations.len());
@@ -123,7 +201,7 @@ pub async fn spawn_analysis(
         all_rule_files.len()
     );
 
-    // 4. Build compact observation summary grouped by project
+    // 4. Build compact observation summary with smart compression
     let mut project_obs: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut i = 0;
@@ -142,10 +220,7 @@ pub async fn spawn_analysis(
         let input_preview = obs
             .get("tool_input")
             .and_then(|v| v.as_str())
-            .map(|s| {
-                let truncated = if s.len() > 500 { &s[..500] } else { s };
-                sanitize_for_prompt(truncated)
-            })
+            .map(|s| compress_observation(s, 500))
             .unwrap_or_default();
 
         let line = if phase == "pre" && i + 1 < observations.len() {
@@ -160,10 +235,7 @@ pub async fn spawn_analysis(
                 let output_preview = next
                     .get("tool_output")
                     .and_then(|v| v.as_str())
-                    .map(|s| {
-                        let truncated = if s.len() > 500 { &s[..500] } else { s };
-                        sanitize_for_prompt(truncated)
-                    })
+                    .map(|s| compress_observation(s, 500))
                     .unwrap_or_default();
                 i += 2;
                 format!("- {tool}: {input_preview} -> {output_preview}")
@@ -202,18 +274,29 @@ pub async fn spawn_analysis(
         .iter()
         .map(|r| {
             let domain = r.domain.as_deref().unwrap_or("general");
-            format!("- {} (domain: {})", r.name, domain)
+            let anti = if r.is_anti_pattern {
+                " [anti-pattern]"
+            } else {
+                ""
+            };
+            format!("- {} (domain: {}){anti}", r.name, domain)
         })
         .collect::<Vec<_>>()
         .join("\n");
 
     let today = chrono::Utc::now().format("%Y-%m-%d");
 
+    // Adjust prompt based on mode
+    let max_rules = if micro { 1 } else { 3 };
+
     let prompt = format!(
         "Analyze these Claude Code tool-use observations and:\n\
          \n\
-         PART 1: Identify 0-3 NEW behavioral patterns that should become persistent rules.\n\
+         PART 1: Identify 0-{max_rules} NEW behavioral patterns that should become persistent rules.\n\
          Focus on repeated corrections, error sequences, and consistent preferences.\n\
+         For each pattern, determine if it is a positive pattern (\"do this\") or an \
+         ANTI-PATTERN (\"avoid this\" — a recurring mistake or bad practice observed).\n\
+         Set is_anti_pattern to true for anti-patterns.\n\
          \n\
          PART 2: For each existing rule listed below, assess whether the new observations \
          SUPPORT, CONTRADICT, or are IRRELEVANT to that rule.\n\
@@ -230,7 +313,7 @@ pub async fn spawn_analysis(
          Output ONLY a valid JSON object (no markdown fences, no other text) with this structure:\n\
          {{\n\
            \"new_rules\": [\n\
-             {{\"name\": \"kebab-case-name\", \"domain\": \"category\", \"confidence\": 0.0-1.0, \"content\": \"markdown rule text\"}}\n\
+             {{\"name\": \"kebab-case-name\", \"domain\": \"category\", \"confidence\": 0.0-1.0, \"content\": \"markdown rule text\", \"is_anti_pattern\": false}}\n\
            ],\n\
            \"verdicts\": [\n\
              {{\"name\": \"existing-rule-name\", \"verdict\": \"support|contradict|irrelevant\", \"strength\": 0.0-1.0}}\n\
@@ -239,6 +322,7 @@ pub async fn spawn_analysis(
          \n\
          Rules for the name field: lowercase letters, digits, and hyphens only.\n\
          Use today's date {today} in the Learned field of new rule content.\n\
+         For anti-patterns, prefix the content with \"ANTI-PATTERN: Avoid this.\" and explain what to do instead.\n\
          For verdicts, strength indicates how strongly the observations support or contradict the rule.\n\
          If no new patterns and no relevant verdicts, output: {{\"new_rules\": [], \"verdicts\": []}}"
     );
@@ -248,6 +332,7 @@ pub async fn spawn_analysis(
     // 5. Spawn claude CLI (blocking, run on thread pool)
     run_log!("Invoking claude CLI (model=claude-haiku-4-5-20251001, max-turns=1)");
 
+    let shell_path = crate::config::shell_path().to_string();
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("claude")
             .args([
@@ -258,6 +343,7 @@ pub async fn spawn_analysis(
                 "--print",
             ])
             .arg(&prompt)
+            .env("PATH", &shell_path)
             .output()
     })
     .await
@@ -303,36 +389,51 @@ pub async fn spawn_analysis(
         return Err(format!("claude CLI failed: {stderr}"));
     }
 
-    // 6. Parse JSON output — try to extract JSON object or fall back to array
+    // 6. Parse JSON output with partial extraction fallback
     let json_str = extract_json_block(&stdout).unwrap_or(&stdout);
     let analysis: AnalysisOutput = match serde_json::from_str(json_str) {
         Ok(a) => a,
-        Err(_) => {
-            // Fallback: try parsing as old-style array of rules
-            match serde_json::from_str::<Vec<crate::models::AnalysisRule>>(
-                extract_json_array(&stdout).unwrap_or(json_str),
-            ) {
-                Ok(rules_vec) => AnalysisOutput {
-                    new_rules: rules_vec,
-                    verdicts: Vec::new(),
-                },
-                Err(e) => {
-                    let error_msg = format!("JSON parse error: {e}");
-                    run_log!("FAILED: {error_msg}");
-                    run_log!("Raw output: {}", &stdout[..stdout.len().min(500)]);
-                    let duration_ms = start.elapsed().as_millis() as i64;
-                    let _ = storage.store_learning_run(&LearningRunPayload {
-                        trigger_mode,
-                        observations_analyzed: observations.len() as i64,
-                        rules_created: 0,
-                        rules_updated: 0,
-                        duration_ms: Some(duration_ms),
-                        status: "failed".to_string(),
-                        error: Some(error_msg),
-                        logs: Some(logs.join("\n")),
-                    });
-                    return Err(format!("Failed to parse Haiku output: {e}"));
+        Err(initial_err) => {
+            // Partial extraction: try to parse new_rules and verdicts independently
+            // so a malformed verdict section doesn't lose good rules (or vice versa)
+            let partial = try_partial_parse(json_str, &stdout);
+            if partial.new_rules.is_empty() && partial.verdicts.is_empty() {
+                // Nothing recovered — try old-style array fallback
+                match serde_json::from_str::<Vec<crate::models::AnalysisRule>>(
+                    extract_json_array(&stdout).unwrap_or(json_str),
+                ) {
+                    Ok(rules_vec) => {
+                        run_log!("Used old-style array fallback ({} rules)", rules_vec.len());
+                        AnalysisOutput {
+                            new_rules: rules_vec,
+                            verdicts: Vec::new(),
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = format!("JSON parse error: {initial_err} (fallback: {e})");
+                        run_log!("FAILED: {error_msg}");
+                        run_log!("Raw output: {}", &stdout[..stdout.len().min(500)]);
+                        let duration_ms = start.elapsed().as_millis() as i64;
+                        let _ = storage.store_learning_run(&LearningRunPayload {
+                            trigger_mode,
+                            observations_analyzed: observations.len() as i64,
+                            rules_created: 0,
+                            rules_updated: 0,
+                            duration_ms: Some(duration_ms),
+                            status: "failed".to_string(),
+                            error: Some(error_msg),
+                            logs: Some(logs.join("\n")),
+                        });
+                        return Err(format!("Failed to parse Haiku output: {initial_err}"));
+                    }
                 }
+            } else {
+                run_log!(
+                    "Partial parse recovered {} rules, {} verdicts",
+                    partial.new_rules.len(),
+                    partial.verdicts.len()
+                );
+                partial
             }
         }
     };
@@ -386,84 +487,23 @@ pub async fn spawn_analysis(
     let rules_dir = base_rules_dir.join(&project_slug);
     std::fs::create_dir_all(&rules_dir).map_err(|e| format!("Failed to create rules dir: {e}"))?;
 
-    let mut rules_created = 0i64;
-    let mut rules_updated = 0i64;
     let existing_rule_names: std::collections::HashSet<String> =
         existing_rules.iter().map(|r| r.name.clone()).collect();
 
-    for rule in &rules {
-        if !is_safe_rule_name(&rule.name) {
-            run_log!(
-                "Skipped '{}': unsafe rule name",
-                &rule.name[..rule.name.len().min(50)]
-            );
-            continue;
-        }
-
-        let file_path = rules_dir.join(format!("{}.md", rule.name));
-
-        let canonical_dir = rules_dir
-            .canonicalize()
-            .map_err(|e| format!("Canonicalize rules dir: {e}"))?;
-        let canonical_parent = file_path
-            .parent()
-            .and_then(|p| p.canonicalize().ok())
-            .unwrap_or_default();
-        if !canonical_parent.starts_with(&canonical_dir) {
-            run_log!("Skipped '{}': path traversal detected", rule.name);
-            continue;
-        }
-
-        let is_update = existing_rule_names.contains(&rule.name);
-        let above_threshold = rule.confidence >= min_confidence;
-
-        // Always store metadata to DB (candidates tracked even below threshold)
-        let stored_file_path = if above_threshold {
-            file_path.to_string_lossy().to_string()
-        } else {
-            String::new()
-        };
-
-        let _ = storage.store_learned_rule(&crate::models::LearnedRulePayload {
-            name: rule.name.clone(),
-            domain: Some(rule.domain.clone()),
-            confidence: rule.confidence,
+    let (rules_created, rules_updated) = write_rule_files(
+        &WriteRuleParams {
+            rules: &rules,
+            rules_dir: &rules_dir,
+            storage,
+            existing_rule_names: &existing_rule_names,
+            min_confidence,
+            micro,
             observation_count: observations.len() as i64,
-            file_path: stored_file_path,
             project: dominant_project.clone(),
-        });
-
-        // Only write the .md file if confidence meets threshold
-        if above_threshold {
-            std::fs::write(&file_path, &rule.content)
-                .map_err(|e| format!("Failed to write rule file: {e}"))?;
-
-            if is_update {
-                rules_updated += 1;
-                run_log!(
-                    "Updated rule '{}' (domain={}, confidence={:.2})",
-                    rule.name,
-                    rule.domain,
-                    rule.confidence
-                );
-            } else {
-                rules_created += 1;
-                run_log!(
-                    "Created rule '{}' (domain={}, confidence={:.2})",
-                    rule.name,
-                    rule.domain,
-                    rule.confidence
-                );
-            }
-        } else {
-            run_log!(
-                "Candidate '{}': confidence {:.2} < threshold {:.2} (tracking in DB)",
-                rule.name,
-                rule.confidence,
-                min_confidence
-            );
-        }
-    }
+        },
+        &mut logs,
+        app,
+    )?;
 
     // 8. Process verdicts on existing rules
     let mut verdicts_applied = 0i64;
@@ -482,6 +522,27 @@ pub async fn spawn_analysis(
                 } else {
                     verdicts_applied += 1;
                     run_log!("Reinforced '{}' (strength={:.2})", verdict.name, strength);
+
+                    // Track cross-project confirmation for promotion
+                    if let Some(ref proj) = dominant_project {
+                        match storage.add_rule_confirmed_project(&verdict.name, proj) {
+                            Ok(projects) => {
+                                if projects.len() >= 3 {
+                                    run_log!(
+                                        "Rule '{}' confirmed in {} projects (promotion candidate)",
+                                        verdict.name,
+                                        projects.len()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to track cross-project confirmation for '{}': {e}",
+                                    verdict.name
+                                );
+                            }
+                        }
+                    }
                 }
             }
             "contradict" => {
@@ -496,6 +557,86 @@ pub async fn spawn_analysis(
         }
     }
     run_log!("Applied {verdicts_applied} verdicts to existing rules");
+
+    // 9. Cross-project promotion: promote rules confirmed in 3+ projects to global/
+    if !micro {
+        let global_dir = base_rules_dir.join("global");
+        match storage.get_promotion_candidates() {
+            Ok(candidates) => {
+                for (name, projects_str) in &candidates {
+                    let global_path = global_dir.join(format!("{name}.md"));
+                    if global_path.exists() {
+                        continue; // Already promoted
+                    }
+
+                    // Find the existing rule file in any project subdirectory
+                    let existing = existing_rules.iter().find(|r| &r.name == name);
+                    if let Some(rule) = existing
+                        && !rule.file_path.is_empty()
+                    {
+                        let source = std::path::Path::new(&rule.file_path);
+                        if source.exists() {
+                            std::fs::create_dir_all(&global_dir).ok();
+                            if let Ok(content) = std::fs::read_to_string(source) {
+                                if std::fs::write(&global_path, &content).is_ok() {
+                                    run_log!(
+                                        "Promoted '{}' to global (confirmed in: {})",
+                                        name,
+                                        projects_str
+                                    );
+                                } else {
+                                    log::warn!(
+                                        "Failed to write promoted rule '{name}' to global dir"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => log::warn!("Failed to get promotion candidates: {e}"),
+        }
+    }
+
+    // 10. Consolidation check: detect rules with overlapping names/domains
+    if !micro {
+        let fresh_rules = storage.get_learned_rules().unwrap_or_default();
+        let mut domain_groups: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for r in &fresh_rules {
+            let domain = r.domain.as_deref().unwrap_or("general").to_string();
+            domain_groups
+                .entry(domain)
+                .or_default()
+                .push(r.name.clone());
+        }
+        for (domain, names) in &domain_groups {
+            if names.len() < 2 {
+                continue;
+            }
+            // Check for rules with shared prefixes (potential duplicates)
+            for i in 0..names.len() {
+                for j in (i + 1)..names.len() {
+                    let shared = names[i]
+                        .chars()
+                        .zip(names[j].chars())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    let min_len = names[i].len().min(names[j].len());
+                    // If >60% of the shorter name is shared prefix, flag as potential overlap
+                    if shared > 3 && shared * 100 / min_len > 60 {
+                        run_log!(
+                            "Consolidation hint: '{}' and '{}' in domain '{}' may overlap (shared prefix: {})",
+                            names[i],
+                            names[j],
+                            domain,
+                            &names[i][..shared]
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     let duration_ms = start.elapsed().as_millis() as i64;
     log::info!(
@@ -517,6 +658,517 @@ pub async fn spawn_analysis(
     });
 
     Ok(())
+}
+
+/// Facet data extracted from a single /insights session JSON file
+#[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
+struct InsightsFacet {
+    #[serde(default)]
+    underlying_goal: String,
+    #[serde(default)]
+    outcome: String,
+    #[serde(default)]
+    session_type: String,
+    #[serde(default)]
+    friction_detail: String,
+    #[serde(default)]
+    brief_summary: String,
+    #[serde(default)]
+    friction_counts: std::collections::HashMap<String, i64>,
+    #[serde(default)]
+    session_id: String,
+}
+
+/// Spawns `/insights` via the claude CLI, then reads the generated facets
+/// and feeds friction/outcome patterns into the learning pipeline.
+pub async fn spawn_insights_analysis(
+    storage: &'static Storage,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    let mut logs: Vec<String> = Vec::new();
+
+    macro_rules! run_log {
+        ($($arg:tt)*) => {{
+            let msg = format!($($arg)*);
+            log::debug!("{msg}");
+            let _ = app.emit("learning-log", &msg);
+            logs.push(msg);
+        }};
+    }
+
+    let start = Instant::now();
+
+    // 1. Run `claude /insights` to generate facets + report
+    run_log!("Running claude /insights to generate session analysis...");
+
+    let shell_path = crate::config::shell_path().to_string();
+    let insights_output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("claude")
+            .args(["/insights", "--print"])
+            .env("PATH", &shell_path)
+            .output()
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| format!("Failed to spawn claude CLI: {e}"))?;
+
+    let stderr = String::from_utf8_lossy(&insights_output.stderr).to_string();
+
+    if !insights_output.status.success() {
+        let error_msg = format!(
+            "claude /insights failed (exit {:?}): {}",
+            insights_output.status.code(),
+            &stderr[..stderr.len().min(500)]
+        );
+        run_log!("FAILED: {error_msg}");
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let _ = storage.store_learning_run(&LearningRunPayload {
+            trigger_mode: "insights".to_string(),
+            observations_analyzed: 0,
+            rules_created: 0,
+            rules_updated: 0,
+            duration_ms: Some(duration_ms),
+            status: "failed".to_string(),
+            error: Some(error_msg.clone()),
+            logs: Some(logs.join("\n")),
+        });
+        return Err(error_msg);
+    }
+
+    run_log!("claude /insights completed successfully");
+
+    // 2. Read facets JSON files
+    let facets_dir = dirs::home_dir()
+        .ok_or("Cannot determine home directory")?
+        .join(".claude")
+        .join("usage-data")
+        .join("facets");
+
+    if !facets_dir.exists() {
+        let error_msg = "No facets directory found after running /insights".to_string();
+        run_log!("FAILED: {error_msg}");
+        return Err(error_msg);
+    }
+
+    let mut facets: Vec<InsightsFacet> = Vec::new();
+    let entries =
+        std::fs::read_dir(&facets_dir).map_err(|e| format!("Failed to read facets dir: {e}"))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str::<InsightsFacet>(&content) {
+                    Ok(facet) => facets.push(facet),
+                    Err(e) => {
+                        log::debug!("Skipping facet {:?}: {e}", path.file_name());
+                    }
+                },
+                Err(e) => {
+                    log::debug!("Cannot read facet {:?}: {e}", path.file_name());
+                }
+            }
+        }
+    }
+
+    run_log!("Loaded {} session facets", facets.len());
+
+    if facets.is_empty() {
+        let error_msg = "No valid facets found to analyze".to_string();
+        run_log!("FAILED: {error_msg}");
+        return Err(error_msg);
+    }
+
+    // 3. Build aggregate friction summary
+    let mut friction_agg: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut outcome_counts: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    let mut friction_details: Vec<String> = Vec::new();
+    let mut summaries: Vec<String> = Vec::new();
+
+    for facet in &facets {
+        for (k, v) in &facet.friction_counts {
+            *friction_agg.entry(k.clone()).or_default() += v;
+        }
+        *outcome_counts.entry(facet.outcome.clone()).or_default() += 1;
+        if !facet.friction_detail.is_empty() {
+            friction_details.push(sanitize_for_prompt(&facet.friction_detail));
+        }
+        if !facet.brief_summary.is_empty() {
+            summaries.push(sanitize_for_prompt(&facet.brief_summary));
+        }
+    }
+
+    // 4. Build prompt for Haiku
+    let friction_summary = friction_agg
+        .iter()
+        .map(|(k, v)| format!("  - {k}: {v} occurrences"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let outcome_summary = outcome_counts
+        .iter()
+        .map(|(k, v)| format!("  - {k}: {v} sessions"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Take up to 30 friction details (most recent/diverse)
+    let detail_sample: Vec<&str> = friction_details
+        .iter()
+        .take(30)
+        .map(|s| s.as_str())
+        .collect();
+
+    // Take up to 20 session summaries for context
+    let summary_sample: Vec<&str> = summaries.iter().take(20).map(|s| s.as_str()).collect();
+
+    // Read existing rules to avoid duplicates
+    let existing_rules = storage.get_learned_rules().unwrap_or_default();
+    let existing_list = existing_rules
+        .iter()
+        .map(|r| {
+            format!(
+                "- {} (domain: {})",
+                r.name,
+                r.domain.as_deref().unwrap_or("general")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+
+    let prompt = format!(
+        "Analyze these Claude Code /insights session-level patterns and extract 0-3 \
+         WORKFLOW-LEVEL rules (not coding-style rules).\n\
+         \n\
+         These rules should help the USER work more effectively with Claude Code — \
+         things like how to prompt, when to be explicit, what to avoid.\n\
+         \n\
+         FRICTION TYPES (aggregate across {total} sessions):\n\
+         {friction_summary}\n\
+         \n\
+         SESSION OUTCOMES:\n\
+         {outcome_summary}\n\
+         \n\
+         SPECIFIC FRICTION DETAILS (sample):\n\
+         {details}\n\
+         \n\
+         SESSION SUMMARIES (sample):\n\
+         {session_summaries}\n\
+         \n\
+         EXISTING RULES (do NOT duplicate these):\n\
+         {existing_list}\n\
+         \n\
+         Output ONLY valid JSON (no markdown fences):\n\
+         {{\n\
+           \"new_rules\": [\n\
+             {{\"name\": \"kebab-case-name\", \"domain\": \"workflow\", \"confidence\": 0.0-1.0, \
+               \"content\": \"markdown rule text\", \"is_anti_pattern\": false}}\n\
+           ],\n\
+           \"verdicts\": []\n\
+         }}\n\
+         \n\
+         Rules for the name field: lowercase letters, digits, and hyphens only.\n\
+         Use today's date {today} in the Learned field of new rule content.\n\
+         Domain MUST be \"workflow\" for all rules.\n\
+         For anti-patterns, prefix content with \"ANTI-PATTERN: Avoid this.\"\n\
+         If no clear patterns emerge, output: {{\"new_rules\": [], \"verdicts\": []}}",
+        total = facets.len(),
+        details = detail_sample.join("\n"),
+        session_summaries = summary_sample.join("\n"),
+    );
+
+    run_log!(
+        "Built insights prompt: {} chars from {} facets",
+        prompt.len(),
+        facets.len()
+    );
+
+    // 5. Invoke Haiku
+    run_log!("Invoking claude CLI (model=claude-haiku-4-5-20251001, max-turns=1)");
+
+    let shell_path2 = crate::config::shell_path().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("claude")
+            .args([
+                "--model",
+                "claude-haiku-4-5-20251001",
+                "--max-turns",
+                "1",
+                "--print",
+            ])
+            .arg(&prompt)
+            .env("PATH", &shell_path2)
+            .output()
+    })
+    .await
+    .map_err(|e| format!("Task join error: {e}"))?
+    .map_err(|e| format!("Failed to spawn claude CLI: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr2 = String::from_utf8_lossy(&output.stderr).to_string();
+
+    run_log!(
+        "CLI finished: exit={:?}, stdout={} bytes",
+        output.status.code(),
+        stdout.len()
+    );
+
+    if !output.status.success() {
+        let error_msg = format!(
+            "claude CLI exit code: {:?}, stderr: {}",
+            output.status.code(),
+            &stderr2[..stderr2.len().min(200)]
+        );
+        run_log!("FAILED: {error_msg}");
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let _ = storage.store_learning_run(&LearningRunPayload {
+            trigger_mode: "insights".to_string(),
+            observations_analyzed: facets.len() as i64,
+            rules_created: 0,
+            rules_updated: 0,
+            duration_ms: Some(duration_ms),
+            status: "failed".to_string(),
+            error: Some(error_msg.clone()),
+            logs: Some(logs.join("\n")),
+        });
+        return Err(error_msg);
+    }
+
+    if !stdout.is_empty() {
+        run_log!("LLM response:\n{}", &stdout[..stdout.len().min(2000)]);
+    }
+
+    // 6. Parse JSON output
+    let json_str = extract_json_block(&stdout).unwrap_or(&stdout);
+    let analysis: AnalysisOutput = match serde_json::from_str(json_str) {
+        Ok(a) => a,
+        Err(initial_err) => {
+            let partial = try_partial_parse(json_str, &stdout);
+            if partial.new_rules.is_empty() {
+                let error_msg = format!("JSON parse error: {initial_err}");
+                run_log!("FAILED: {error_msg}");
+                let duration_ms = start.elapsed().as_millis() as i64;
+                let _ = storage.store_learning_run(&LearningRunPayload {
+                    trigger_mode: "insights".to_string(),
+                    observations_analyzed: facets.len() as i64,
+                    rules_created: 0,
+                    rules_updated: 0,
+                    duration_ms: Some(duration_ms),
+                    status: "failed".to_string(),
+                    error: Some(error_msg.clone()),
+                    logs: Some(logs.join("\n")),
+                });
+                return Err(error_msg);
+            }
+            partial
+        }
+    };
+
+    run_log!("Parsed {} candidate rules", analysis.new_rules.len());
+
+    // 7. Write rule files using shared helper
+    let min_confidence: f64 = storage
+        .get_setting("learning.min_confidence")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.95);
+
+    let base_rules_dir = dirs::home_dir()
+        .ok_or("Cannot determine home directory")?
+        .join(".claude")
+        .join("rules")
+        .join("learned");
+
+    let rules_dir = base_rules_dir.join("insights");
+    std::fs::create_dir_all(&rules_dir).map_err(|e| format!("Failed to create rules dir: {e}"))?;
+
+    let existing_rule_names: std::collections::HashSet<String> =
+        existing_rules.iter().map(|r| r.name.clone()).collect();
+
+    let (rules_created, rules_updated) = write_rule_files(
+        &WriteRuleParams {
+            rules: &analysis.new_rules,
+            rules_dir: &rules_dir,
+            storage,
+            existing_rule_names: &existing_rule_names,
+            min_confidence,
+            micro: false, // insights are never micro
+            observation_count: facets.len() as i64,
+            project: None, // insights rules are not project-scoped
+        },
+        &mut logs,
+        app,
+    )?;
+
+    let duration_ms = start.elapsed().as_millis() as i64;
+    run_log!(
+        "Insights analysis complete: {rules_created} created, {rules_updated} updated in {duration_ms}ms"
+    );
+
+    let _ = storage.store_learning_run(&LearningRunPayload {
+        trigger_mode: "insights".to_string(),
+        observations_analyzed: facets.len() as i64,
+        rules_created,
+        rules_updated,
+        duration_ms: Some(duration_ms),
+        status: "completed".to_string(),
+        error: None,
+        logs: Some(logs.join("\n")),
+    });
+
+    Ok(())
+}
+
+/// Parameters for the shared rule-writing helper.
+struct WriteRuleParams<'a> {
+    rules: &'a [crate::models::AnalysisRule],
+    rules_dir: &'a std::path::Path,
+    storage: &'static Storage,
+    existing_rule_names: &'a std::collections::HashSet<String>,
+    min_confidence: f64,
+    micro: bool,
+    observation_count: i64,
+    project: Option<String>,
+}
+
+/// Shared rule-writing logic used by both `spawn_analysis` and `spawn_insights_analysis`.
+/// Validates rule names, checks path traversal, stores metadata in DB, and optionally
+/// writes .md files when confidence exceeds threshold.
+/// Returns (rules_created, rules_updated).
+fn write_rule_files(
+    params: &WriteRuleParams<'_>,
+    logs: &mut Vec<String>,
+    app: &tauri::AppHandle,
+) -> Result<(i64, i64), String> {
+    let WriteRuleParams {
+        rules,
+        rules_dir,
+        storage,
+        existing_rule_names,
+        min_confidence,
+        micro,
+        observation_count,
+        ref project,
+    } = *params;
+    let mut rules_created = 0i64;
+    let mut rules_updated = 0i64;
+
+    for rule in rules {
+        if !is_safe_rule_name(&rule.name) {
+            let msg = format!(
+                "Skipped '{}': unsafe rule name",
+                &rule.name[..rule.name.len().min(50)]
+            );
+            log::debug!("{msg}");
+            let _ = app.emit("learning-log", &msg);
+            logs.push(msg);
+            continue;
+        }
+
+        let file_path = rules_dir.join(format!("{}.md", rule.name));
+
+        let canonical_dir = rules_dir
+            .canonicalize()
+            .map_err(|e| format!("Canonicalize rules dir: {e}"))?;
+        let canonical_parent = file_path
+            .parent()
+            .and_then(|p| p.canonicalize().ok())
+            .unwrap_or_default();
+        if !canonical_parent.starts_with(&canonical_dir) {
+            let msg = format!("Skipped '{}': path traversal detected", rule.name);
+            log::debug!("{msg}");
+            let _ = app.emit("learning-log", &msg);
+            logs.push(msg);
+            continue;
+        }
+
+        let is_update = existing_rule_names.contains(&rule.name);
+        // Micro-updates only create candidates, never write .md files
+        let above_threshold = !micro && rule.confidence >= min_confidence;
+
+        // Always store metadata to DB (candidates tracked even below threshold)
+        let stored_file_path = if above_threshold {
+            file_path.to_string_lossy().to_string()
+        } else {
+            String::new()
+        };
+
+        let _ = storage.store_learned_rule(&crate::models::LearnedRulePayload {
+            name: rule.name.clone(),
+            domain: Some(rule.domain.clone()),
+            confidence: rule.confidence,
+            observation_count,
+            file_path: stored_file_path,
+            project: project.clone(),
+            is_anti_pattern: rule.is_anti_pattern,
+        });
+
+        let anti_label = if rule.is_anti_pattern {
+            " [ANTI-PATTERN]"
+        } else {
+            ""
+        };
+
+        // Sanitize LLM-generated content before writing to disk to prevent
+        // prompt-injection persistence (content is read back into future prompts)
+        let sanitized_content = sanitize_rule_content(&rule.content);
+
+        // Only write the .md file if confidence meets threshold and not micro mode
+        if above_threshold {
+            std::fs::write(&file_path, &sanitized_content)
+                .map_err(|e| format!("Failed to write rule file: {e}"))?;
+
+            let msg = if is_update {
+                rules_updated += 1;
+                format!(
+                    "Updated rule '{}'{anti_label} (domain={}, confidence={:.2})",
+                    rule.name, rule.domain, rule.confidence
+                )
+            } else {
+                rules_created += 1;
+                format!(
+                    "Created rule '{}'{anti_label} (domain={}, confidence={:.2})",
+                    rule.name, rule.domain, rule.confidence
+                )
+            };
+            log::debug!("{msg}");
+            let _ = app.emit("learning-log", &msg);
+            logs.push(msg);
+        } else {
+            let msg = format!(
+                "Candidate '{}'{anti_label}: confidence {:.2} < threshold {:.2} (tracking in DB)",
+                rule.name, rule.confidence, min_confidence
+            );
+            log::debug!("{msg}");
+            let _ = app.emit("learning-log", &msg);
+            logs.push(msg);
+        }
+    }
+
+    Ok((rules_created, rules_updated))
+}
+
+/// Basic sanitization of LLM-generated rule content before writing to disk.
+/// Removes markdown code fences and system-level prompt markers that could
+/// be used for prompt injection when the content is read back into future prompts.
+fn sanitize_rule_content(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim().to_lowercase();
+            !trimmed.starts_with("<system")
+                && !trimmed.starts_with("</system")
+                && !trimmed.starts_with("<user")
+                && !trimmed.starts_with("</user")
+                && !trimmed.starts_with("<assistant")
+                && !trimmed.starts_with("</assistant")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Try to extract a JSON object from potentially noisy output
@@ -547,4 +1199,39 @@ fn extract_json_array(s: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// Attempt partial JSON parsing: extract new_rules and verdicts independently.
+/// If the full JSON fails to parse, this tries to recover each field separately
+/// so a malformed verdict array doesn't lose good rule extractions.
+fn try_partial_parse(json_str: &str, raw: &str) -> AnalysisOutput {
+    let mut result = AnalysisOutput {
+        new_rules: Vec::new(),
+        verdicts: Vec::new(),
+    };
+
+    // Try to parse as a generic JSON value first
+    let obj: serde_json::Value =
+        match serde_json::from_str(extract_json_block(raw).unwrap_or(json_str)) {
+            Ok(v) => v,
+            Err(_) => return result,
+        };
+
+    // Extract new_rules independently
+    if let Some(rules_val) = obj.get("new_rules")
+        && let Ok(rules) =
+            serde_json::from_value::<Vec<crate::models::AnalysisRule>>(rules_val.clone())
+    {
+        result.new_rules = rules;
+    }
+
+    // Extract verdicts independently
+    if let Some(verdicts_val) = obj.get("verdicts")
+        && let Ok(verdicts) =
+            serde_json::from_value::<Vec<crate::models::RuleVerdict>>(verdicts_val.clone())
+    {
+        result.verdicts = verdicts;
+    }
+
+    result
 }

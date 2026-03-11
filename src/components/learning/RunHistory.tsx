@@ -5,8 +5,11 @@ import { timeAgo } from "../../utils/time";
 interface RunHistoryProps {
   runs: LearningRun[];
   analyzing: boolean;
+  analyzingInsights?: boolean;
   liveLogs: string[];
 }
+
+const LIVE_RUN_ID = -1;
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return "—";
@@ -14,38 +17,53 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function RunHistory({ runs, analyzing, liveLogs }: RunHistoryProps) {
+function RunHistory({ runs, analyzing, analyzingInsights, liveLogs }: RunHistoryProps) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const liveLogRef = useRef<HTMLPreElement>(null);
+  const logRef = useRef<HTMLPreElement>(null);
+  const isRunning = analyzing || !!analyzingInsights;
 
+  // Auto-select the live run when any analysis starts
   useEffect(() => {
-    if (liveLogRef.current) {
-      liveLogRef.current.scrollTop = liveLogRef.current.scrollHeight;
+    if (isRunning) {
+      setSelectedId(LIVE_RUN_ID);
     }
-  }, [liveLogs]);
+  }, [isRunning]);
 
-  const selected = runs.find((r) => r.id === selectedId) ?? null;
+  // Auto-scroll logs to bottom when new entries arrive
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [liveLogs, selectedId]);
+
+  const selected = selectedId === LIVE_RUN_ID
+    ? null
+    : runs.find((r) => r.id === selectedId) ?? null;
+  const showLive = selectedId === LIVE_RUN_ID;
 
   return (
     <div className="learning-section">
       <div className="learning-section-header">RECENT RUNS</div>
 
-      {analyzing && liveLogs.length > 0 && (
-        <div className="learning-run-live">
-          <div className="learning-run-live-header">
-            <span className="learning-run-live-dot" />
-            Running analysis…
-          </div>
-          <pre className="learning-run-detail-logs" ref={liveLogRef}>
-            {liveLogs.join("\n")}
-          </pre>
-        </div>
-      )}
-
-      {runs.length === 0 && !analyzing ? (
+      {!isRunning && runs.length === 0 ? (
         <div className="learning-empty">No analysis runs yet</div>
       ) : (
         <div className="learning-runs-list">
+          {isRunning && (
+            <div
+              className={`learning-run-row${showLive ? " learning-run-row--selected" : ""}`}
+              onClick={() =>
+                setSelectedId(showLive ? null : LIVE_RUN_ID)
+              }
+            >
+              <span className="learning-run-icon learning-run-icon--live">
+                <span className="learning-run-live-dot" />
+              </span>
+              <span className="learning-run-trigger">{analyzingInsights ? "insights" : "on-demand"}</span>
+              <span className="learning-run-result">running…</span>
+              <span className="learning-run-time">now</span>
+            </div>
+          )}
           {runs.map((run) => (
             <div
               key={run.id}
@@ -70,6 +88,24 @@ function RunHistory({ runs, analyzing, liveLogs }: RunHistoryProps) {
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {showLive && (
+        <div className="learning-run-detail">
+          <div className="learning-run-detail-row">
+            <span className="learning-run-detail-label">Status</span>
+            <span className="learning-run-icon--live-text">running</span>
+          </div>
+          <div className="learning-run-detail-row">
+            <span className="learning-run-detail-label">Trigger</span>
+            <span>on-demand</span>
+          </div>
+          {liveLogs.length > 0 && (
+            <pre className="learning-run-detail-logs" ref={logRef}>
+              {liveLogs.join("\n")}
+            </pre>
+          )}
         </div>
       )}
 

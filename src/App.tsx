@@ -432,6 +432,18 @@ function App() {
     }
   }, [pendingUpdate, updating, toast]);
 
+  // Release stuck scrollbar drag state during OS window resize.
+  // WebKit can leave the scrollbar thumb in a dragging state when the
+  // window is resized via the OS chrome (bottom-right corner), because
+  // the mouseup from the resize never reaches the webview.
+  useEffect(() => {
+    const onResize = () => {
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   // Intercept OS-level close (Alt+F4, etc.) to hide instead of quit
   useEffect(() => {
     const unlistenPromise = getCurrentWindow().onCloseRequested(

@@ -4,7 +4,7 @@ import RunHistory from "../components/learning/RunHistory";
 import "../styles/learning.css";
 
 function RunsWindowView() {
-  const { runs, analyzing, liveLogs, loading } = useLearningData();
+  const { runs, analyzing, analyzingInsights, liveLogs, loading } = useLearningData();
 
   const handleClose = async () => {
     await getCurrentWindow().close();
@@ -28,7 +28,7 @@ function RunsWindowView() {
         {loading ? (
           <div className="learning-loading">Loading...</div>
         ) : (
-          <RunHistory runs={runs} analyzing={analyzing} liveLogs={liveLogs} />
+          <RunHistory runs={runs} analyzing={analyzing} analyzingInsights={analyzingInsights} liveLogs={liveLogs} />
         )}
       </div>
     </div>

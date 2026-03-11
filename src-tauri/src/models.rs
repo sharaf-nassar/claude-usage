@@ -156,6 +156,8 @@ pub struct LearnedRulePayload {
     pub file_path: String,
     #[serde(default)]
     pub project: Option<String>,
+    #[serde(default)]
+    pub is_anti_pattern: bool,
 }
 
 fn default_confidence() -> f64 {
@@ -189,6 +191,7 @@ pub struct LearnedRule {
     pub updated_at: String,
     pub state: String,
     pub project: Option<String>,
+    pub is_anti_pattern: bool,
 }
 
 // Tool frequency count for status strip
@@ -277,6 +280,8 @@ pub struct AnalysisRule {
     pub domain: String,
     pub confidence: f64,
     pub content: String,
+    #[serde(default)]
+    pub is_anti_pattern: bool,
 }
 
 // Verdict on an existing rule from LLM analysis

@@ -25,6 +25,7 @@ export function useLearningData() {
   const [topTools, setTopTools] = useState<ToolCount[]>([]);
   const [sparkline, setSparkline] = useState<number[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzingInsights, setAnalyzingInsights] = useState(false);
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -63,6 +64,7 @@ export function useLearningData() {
     const unlisten = listen("learning-updated", () => {
       refresh();
       setAnalyzing(false);
+      setAnalyzingInsights(false);
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -104,6 +106,19 @@ export function useLearningData() {
     }
   }, [refresh, toast]);
 
+  const triggerInsights = useCallback(async () => {
+    setAnalyzingInsights(true);
+    setLiveLogs([]);
+    try {
+      await invoke("trigger_insights_analysis");
+      await refresh();
+    } catch (e) {
+      toast("warning", String(e));
+    } finally {
+      setAnalyzingInsights(false);
+    }
+  }, [refresh, toast]);
+
   const deleteRule = useCallback(
     async (name: string) => {
       try {
@@ -125,10 +140,12 @@ export function useLearningData() {
     topTools,
     sparkline,
     analyzing,
+    analyzingInsights,
     liveLogs,
     loading,
     updateSettings,
     triggerAnalysis,
+    triggerInsights,
     deleteRule,
     refresh,
   };

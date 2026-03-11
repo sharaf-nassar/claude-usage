@@ -126,6 +126,7 @@ export interface LearnedRule {
   updated_at: string;
   state: string;
   project: string | null;
+  is_anti_pattern: boolean;
 }
 
 export interface LearningRun {

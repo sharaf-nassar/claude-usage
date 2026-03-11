@@ -281,7 +281,15 @@ async fn get_learning_runs(limit: i32) -> Result<Vec<LearningRun>, String> {
 #[tauri::command]
 async fn trigger_analysis(app: tauri::AppHandle) -> Result<(), String> {
     let storage = get_storage()?;
-    let result = learning::spawn_analysis(storage, "on-demand", &app).await;
+    let result = learning::spawn_analysis(storage, "on-demand", &app, false).await;
+    let _ = app.emit("learning-updated", ());
+    result
+}
+
+#[tauri::command]
+async fn trigger_insights_analysis(app: tauri::AppHandle) -> Result<(), String> {
+    let storage = get_storage()?;
+    let result = learning::spawn_insights_analysis(storage, &app).await;
     let _ = app.emit("learning-updated", ());
     result
 }
@@ -463,10 +471,25 @@ pub fn run() {
 
                         let handle = se_handle.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) =
-                                learning::spawn_analysis(storage, "session-end", &handle).await
+                            // Try full analysis first; if not enough observations, try micro-update
+                            match learning::spawn_analysis(storage, "session-end", &handle, false)
+                                .await
                             {
-                                log::error!("Session-end learning analysis error: {e}");
+                                Ok(()) => {}
+                                Err(_) => {
+                                    // Full analysis failed (likely insufficient observations).
+                                    // Try micro-update with lower threshold to create candidates.
+                                    if let Err(e) = learning::spawn_analysis(
+                                        storage,
+                                        "session-end-micro",
+                                        &handle,
+                                        true,
+                                    )
+                                    .await
+                                    {
+                                        log::debug!("Session-end micro analysis skipped: {e}");
+                                    }
+                                }
                             }
                             let _ = handle.emit("learning-updated", ());
                         });
@@ -505,9 +528,13 @@ pub fn run() {
                         if last_run.elapsed() >= std::time::Duration::from_secs(interval_mins * 60)
                         {
                             last_run = std::time::Instant::now();
-                            if let Err(e) =
-                                learning::spawn_analysis(storage, "periodic", &periodic_handle)
-                                    .await
+                            if let Err(e) = learning::spawn_analysis(
+                                storage,
+                                "periodic",
+                                &periodic_handle,
+                                false,
+                            )
+                            .await
                             {
                                 log::error!("Periodic learning analysis error: {e}");
                             }
@@ -606,6 +633,7 @@ pub fn run() {
             delete_learned_rule,
             get_learning_runs,
             trigger_analysis,
+            trigger_insights_analysis,
             get_observation_count,
             get_unanalyzed_observation_count,
             get_top_tools,

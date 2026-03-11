@@ -116,9 +116,11 @@ function LearningPanel() {
     topTools,
     sparkline,
     analyzing,
+    analyzingInsights,
     loading,
     updateSettings,
     triggerAnalysis,
+    triggerInsights,
     deleteRule,
   } = useLearningData();
 
@@ -171,6 +173,14 @@ function LearningPanel() {
     <div className="learning-app">
       <div className="learning-toolbar">
         <span className="learning-toolbar-label">Learning</span>
+        <button
+          className="learning-insights-btn"
+          onClick={triggerInsights}
+          disabled={analyzingInsights || analyzing}
+          title="Run /insights and extract workflow rules"
+        >
+          {analyzingInsights ? "Running..." : "Insights"}
+        </button>
         <div className="learning-toolbar-right">
           {settings.trigger_mode !== "on-demand" && (
             <button

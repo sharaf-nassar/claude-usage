@@ -248,6 +248,43 @@ impl Storage {
                 .map_err(|e| format!("Failed to record migration 3: {e}"))?;
         }
 
+        // Migration 4: anti-patterns, cross-project tracking, observation summaries
+        if current_version < 4 {
+            let new_cols = [
+                ("is_anti_pattern", "INTEGER NOT NULL DEFAULT 0"),
+                ("confirmed_projects", "TEXT DEFAULT NULL"),
+            ];
+            for (col, typ) in &new_cols {
+                let has_col: bool = conn
+                    .prepare(&format!("SELECT {col} FROM learned_rules LIMIT 0"))
+                    .is_ok();
+                if !has_col {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE learned_rules ADD COLUMN {col} {typ};"
+                    ))
+                    .map_err(|e| format!("Migration 4 (add {col}) error: {e}"))?;
+                }
+            }
+
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS observation_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    period TEXT NOT NULL,
+                    project TEXT,
+                    tool_counts TEXT NOT NULL,
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    total_observations INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(period, project)
+                );
+                CREATE INDEX IF NOT EXISTS idx_obs_summaries_period ON observation_summaries(period);",
+            )
+            .map_err(|e| format!("Migration 4 (observation_summaries) error: {e}"))?;
+
+            conn.execute("INSERT INTO schema_version (version) VALUES (4)", [])
+                .map_err(|e| format!("Failed to record migration 4: {e}"))?;
+        }
+
         let storage = Self {
             conn: Mutex::new(conn),
         };
@@ -849,7 +886,7 @@ impl Storage {
                  WHERE timestamp >= ?1 AND cwd IS NOT NULL
                  GROUP BY cwd, hostname
                  ORDER BY total_tokens DESC
-                 LIMIT 50",
+                 LIMIT 200",
             )
             .map_err(|e| format!("Prepare error: {e}"))?;
 
@@ -866,11 +903,14 @@ impl Storage {
             })
             .map_err(|e| format!("Query error: {e}"))?;
 
-        let mut results = Vec::new();
+        let mut raw: Vec<ProjectBreakdown> = Vec::new();
         for row in rows {
-            results.push(row.map_err(|e| format!("Row error: {e}"))?);
+            raw.push(row.map_err(|e| format!("Row error: {e}"))?);
         }
-        Ok(results)
+
+        // Merge subdirectories into their parent project root.
+        // If /a/b is a prefix of /a/b/c, fold /a/b/c into /a/b.
+        Ok(merge_project_subdirs(raw))
     }
 
     pub fn get_session_breakdown(
@@ -1250,15 +1290,24 @@ impl Storage {
     pub fn store_learned_rule(&self, payload: &LearnedRulePayload) -> Result<(), String> {
         let conn = self.conn.lock();
         let now = Utc::now().to_rfc3339();
+        // Dynamic evidence scaling: more observations → more weight.
+        // Clamped to [5, 20] so tiny batches don't over-commit and large batches
+        // don't overwhelm existing evidence.
+        let evidence_scale = (payload.observation_count as f64).clamp(5.0, 20.0);
+        let alpha = payload.confidence * evidence_scale;
+        let beta = (1.0 - payload.confidence) * evidence_scale;
+        let is_anti = payload.is_anti_pattern as i32;
         conn.execute(
-            "INSERT INTO learned_rules (name, domain, confidence, observation_count, file_path, alpha, beta_param, last_evidence_at, state, project)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, ?7, 'emerging', ?8)
+            "INSERT INTO learned_rules (name, domain, confidence, observation_count, file_path, alpha, beta_param, last_evidence_at, state, project, is_anti_pattern)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'emerging', ?9, ?10)
              ON CONFLICT(name) DO UPDATE SET
                  domain = excluded.domain,
                  alpha = learned_rules.alpha + excluded.alpha,
+                 beta_param = learned_rules.beta_param + excluded.beta_param,
                  observation_count = learned_rules.observation_count + excluded.observation_count,
-                 file_path = excluded.file_path,
+                 file_path = CASE WHEN length(excluded.file_path) > 0 THEN excluded.file_path ELSE learned_rules.file_path END,
                  last_evidence_at = excluded.last_evidence_at,
+                 is_anti_pattern = excluded.is_anti_pattern,
                  updated_at = datetime('now')",
             params![
                 payload.name,
@@ -1266,9 +1315,11 @@ impl Storage {
                 payload.confidence,
                 payload.observation_count,
                 payload.file_path,
-                payload.confidence,
+                alpha,
+                beta,
                 now,
                 payload.project,
+                is_anti,
             ],
         )
         .map_err(|e| format!("Insert learned rule error: {e}"))?;
@@ -1302,8 +1353,9 @@ impl Storage {
             let conn = self.conn.lock();
             let mut stmt = conn
                 .prepare_cached(
-                    "SELECT name, domain, alpha, beta_param, observation_count, last_evidence_at, state, project, created_at, updated_at
-                     FROM learned_rules",
+                    "SELECT name, domain, alpha, beta_param, observation_count, last_evidence_at, state, project, created_at, updated_at, is_anti_pattern
+                     FROM learned_rules
+                     WHERE state != 'suppressed'",
                 )
                 .map_err(|e| format!("Prepare error: {e}"))?;
             let rows = stmt
@@ -1319,6 +1371,7 @@ impl Storage {
                         row.get::<_, Option<String>>(7)?,
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
+                        row.get::<_, i32>(10).unwrap_or(0),
                     ))
                 })
                 .map_err(|e| format!("Query error: {e}"))?;
@@ -1336,11 +1389,13 @@ impl Storage {
                     project,
                     created,
                     updated,
+                    is_anti,
                 ) = row.map_err(|e| format!("Row error: {e}"))?;
                 map.insert(
                     name,
                     (
                         domain, alpha, beta, obs_count, last_ev, state, project, created, updated,
+                        is_anti,
                     ),
                 );
             }
@@ -1390,6 +1445,7 @@ impl Storage {
                     project,
                     created_at,
                     updated_at,
+                    is_anti,
                 ) = meta_map.remove(&name).unwrap_or((
                     None,
                     1.0,
@@ -1400,6 +1456,7 @@ impl Storage {
                     None,
                     now.clone(),
                     now,
+                    0,
                 ));
 
                 let fresh = freshness_factor(last_ev.as_deref());
@@ -1418,6 +1475,7 @@ impl Storage {
                     updated_at,
                     state,
                     project,
+                    is_anti_pattern: is_anti != 0,
                 });
             }
         }
@@ -1435,6 +1493,7 @@ impl Storage {
                 project,
                 created_at,
                 updated_at,
+                is_anti,
             ),
         ) in meta_map
         {
@@ -1454,12 +1513,17 @@ impl Storage {
                 updated_at,
                 state,
                 project,
+                is_anti_pattern: is_anti != 0,
             });
         }
 
+        // Impact-based sorting: confidence * ln(observation_count + 1)
+        // This ranks impactful, well-evidenced rules higher than trivial high-confidence ones
         rules.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
+            let score_a = a.confidence * (a.observation_count as f64 + 1.0).ln();
+            let score_b = b.confidence * (b.observation_count as f64 + 1.0).ln();
+            score_b
+                .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(rules)
@@ -1473,56 +1537,63 @@ impl Storage {
             ));
         }
 
-        // Get file_path from DB before deleting the record
+        // Soft-delete: keep the DB record with strong negative feedback so the
+        // LLM can't trivially re-promote the same pattern. Boost beta by 5.0,
+        // clear the file_path, and set state to 'suppressed' so the rule is
+        // hidden from the UI but still tracked to prevent re-creation.
         let file_path: Option<String> = {
             let conn = self.conn.lock();
-            conn.query_row(
-                "SELECT file_path FROM learned_rules WHERE name = ?1",
+            let fp: Option<String> = conn
+                .query_row(
+                    "SELECT file_path FROM learned_rules WHERE name = ?1",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            conn.execute(
+                "UPDATE learned_rules SET beta_param = beta_param + 5.0, file_path = '', state = 'suppressed', updated_at = datetime('now') WHERE name = ?1",
                 params![name],
-                |row| row.get(0),
             )
-            .ok()
+            .ok();
+            fp
         };
 
-        // Delete from table
-        let conn = self.conn.lock();
-        conn.execute("DELETE FROM learned_rules WHERE name = ?1", params![name])
-            .map_err(|e| format!("Delete rule error: {e}"))?;
-        drop(conn);
-
-        // Delete file using stored path, or fall back to searching subdirectories
-        if let Some(fp) = file_path {
-            let path = std::path::Path::new(&fp);
+        // Delete the .md file from disk
+        if let Some(fp) = &file_path
+            && !fp.is_empty()
+        {
+            let path = std::path::Path::new(fp);
             if path.exists() {
                 std::fs::remove_file(path).map_err(|e| format!("Delete file error: {e}"))?;
             }
-        } else {
-            // Fallback: search recursively
-            let rules_dir = dirs::home_dir()
-                .ok_or("Cannot determine home directory")?
-                .join(".claude")
-                .join("rules")
-                .join("learned");
-            fn find_and_delete(dir: &std::path::Path, name: &str) -> bool {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            if find_and_delete(&path, name) {
-                                return true;
-                            }
-                        } else if path.file_stem().is_some_and(|s| s == name)
-                            && path.extension().is_some_and(|e| e == "md")
-                        {
-                            let _ = std::fs::remove_file(&path);
+        }
+
+        // Also search recursively as fallback
+        let rules_dir = dirs::home_dir()
+            .ok_or("Cannot determine home directory")?
+            .join(".claude")
+            .join("rules")
+            .join("learned");
+        fn find_and_delete(dir: &std::path::Path, name: &str) -> bool {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if find_and_delete(&path, name) {
                             return true;
                         }
+                    } else if path.file_stem().is_some_and(|s| s == name)
+                        && path.extension().is_some_and(|e| e == "md")
+                    {
+                        let _ = std::fs::remove_file(&path);
+                        return true;
                     }
                 }
-                false
             }
-            find_and_delete(&rules_dir, name);
+            false
         }
+        find_and_delete(&rules_dir, name);
         Ok(())
     }
 
@@ -1542,15 +1613,163 @@ impl Storage {
 
     pub fn cleanup_old_observations(&self) -> Result<(), String> {
         let conn = self.conn.lock();
+
+        // Store compressed summary of observations about to be deleted,
+        // preserving historical trends even after raw data is gone.
+        let cutoff_ts: String = conn
+            .query_row(
+                "SELECT MIN(
+                    COALESCE((SELECT MAX(created_at) FROM learning_runs WHERE status = 'completed'), datetime('now', '-30 days')),
+                    datetime('now', '-7 days')
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| Utc::now().to_rfc3339());
+
+        // Aggregate tool counts and error counts by project for the period being cleaned
+        let mut summary_stmt = conn
+            .prepare_cached(
+                "SELECT cwd, tool_name, COUNT(*) as cnt,
+                        SUM(CASE WHEN tool_output LIKE '%error%' OR tool_output LIKE '%Error%' THEN 1 ELSE 0 END) as err_cnt
+                 FROM observations
+                 WHERE created_at < ?1
+                 GROUP BY cwd, tool_name",
+            )
+            .map_err(|e| format!("Summary prepare error: {e}"))?;
+
+        let summary_rows = summary_stmt
+            .query_map(params![cutoff_ts], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| format!("Summary query error: {e}"))?;
+
+        // Group by project
+        let mut project_summaries: std::collections::HashMap<
+            Option<String>,
+            (serde_json::Map<String, serde_json::Value>, i64, i64),
+        > = std::collections::HashMap::new();
+        for row in summary_rows {
+            let (project, tool, count, errors) = row.map_err(|e| format!("Summary row: {e}"))?;
+            let entry = project_summaries
+                .entry(project)
+                .or_insert_with(|| (serde_json::Map::new(), 0, 0));
+            entry.0.insert(tool, serde_json::Value::from(count));
+            entry.1 += errors;
+            entry.2 += count;
+        }
+        drop(summary_stmt);
+
+        let period = Utc::now().format("%Y-%m-%d").to_string();
+        for (project, (tool_counts, error_count, total)) in &project_summaries {
+            if *total == 0 {
+                continue;
+            }
+            let tc_json = serde_json::Value::Object(tool_counts.clone()).to_string();
+            conn.execute(
+                "INSERT OR REPLACE INTO observation_summaries (period, project, tool_counts, error_count, total_observations)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![period, project, tc_json, error_count, total],
+            )
+            .ok(); // Best-effort: don't fail cleanup if summary write fails
+        }
+
         conn.execute(
-            "DELETE FROM observations WHERE created_at < (
-                SELECT COALESCE(MAX(created_at), datetime('now', '-30 days'))
-                FROM learning_runs WHERE status = 'completed'
-            ) AND created_at < datetime('now', '-7 days')",
-            [],
+            "DELETE FROM observations WHERE created_at < ?1",
+            params![cutoff_ts],
         )
         .map_err(|e| format!("Observation cleanup error: {e}"))?;
         Ok(())
+    }
+
+    /// Add a project to a rule's confirmed_projects list (comma-separated).
+    /// Returns the updated list of confirmed projects.
+    pub fn add_rule_confirmed_project(
+        &self,
+        name: &str,
+        project: &str,
+    ) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock();
+        let current: Option<String> = conn
+            .query_row(
+                "SELECT confirmed_projects FROM learned_rules WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        let mut projects: Vec<String> = current
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+
+        if !projects.iter().any(|p| p == project) {
+            projects.push(project.to_string());
+            let joined = projects.join(",");
+            conn.execute(
+                "UPDATE learned_rules SET confirmed_projects = ?1, updated_at = datetime('now') WHERE name = ?2",
+                params![joined, name],
+            )
+            .map_err(|e| format!("Update confirmed_projects error: {e}"))?;
+        }
+
+        Ok(projects)
+    }
+
+    /// Get rules that have been confirmed in 3+ distinct projects (promotion candidates).
+    /// Filters by computed confidence (Wilson lower bound with freshness decay) rather
+    /// than the `state` column, which is only set on INSERT and may be stale.
+    pub fn get_promotion_candidates(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT name, confirmed_projects, alpha, beta_param, last_evidence_at
+                 FROM learned_rules
+                 WHERE confirmed_projects IS NOT NULL",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        let mut candidates = Vec::new();
+        for row in rows {
+            let (name, projects_str, alpha, beta, last_ev) =
+                row.map_err(|e| format!("Row error: {e}"))?;
+
+            // Compute effective confidence using Wilson lower bound + freshness decay
+            let fresh = freshness_factor(last_ev.as_deref());
+            let confidence = wilson_lower_bound(alpha * fresh, beta * fresh);
+
+            // Skip invalidated rules (confidence < 0.4) or stale rules (freshness < 0.3)
+            if confidence < 0.4 || fresh < 0.3 {
+                continue;
+            }
+
+            let count = projects_str.split(',').filter(|s| !s.is_empty()).count();
+            if count >= 3 {
+                candidates.push((name, projects_str));
+            }
+        }
+        Ok(candidates)
     }
 
     pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {
@@ -1594,6 +1813,94 @@ impl Storage {
 
         Ok(())
     }
+}
+
+/// Merge project breakdown entries where one cwd is a subdirectory of another.
+/// For example, `/home/user/work/foo` and `/home/user/work/foo/bar` are merged
+/// into a single entry under `/home/user/work/foo`.
+fn merge_project_subdirs(mut rows: Vec<ProjectBreakdown>) -> Vec<ProjectBreakdown> {
+    if rows.len() <= 1 {
+        return rows;
+    }
+
+    // Sort by path so parents come before children
+    rows.sort_by(|a, b| a.project.cmp(&b.project));
+
+    // Collect all unique project paths (across all hostnames)
+    let paths: Vec<String> = {
+        let mut p: Vec<String> = rows.iter().map(|r| r.project.clone()).collect();
+        p.sort();
+        p.dedup();
+        p
+    };
+
+    // Build a mapping: child path → parent root
+    let mut parent_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for path in &paths {
+        // Check if any other path is a proper prefix of this one
+        let mut best_parent: Option<&str> = None;
+        for candidate in &paths {
+            if candidate == path {
+                continue;
+            }
+            // candidate must be a proper prefix with a '/' boundary
+            if path.starts_with(candidate.as_str())
+                && path.as_bytes().get(candidate.len()) == Some(&b'/')
+            {
+                // Pick the shortest (most ancestral) parent
+                match best_parent {
+                    Some(bp) if candidate.len() < bp.len() => {
+                        best_parent = Some(candidate);
+                    }
+                    None => {
+                        best_parent = Some(candidate);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some(parent) = best_parent {
+            parent_map.insert(path.clone(), parent.to_string());
+        }
+    }
+
+    if parent_map.is_empty() {
+        // No merging needed — sort by total_tokens desc and return
+        rows.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+        rows.truncate(50);
+        return rows;
+    }
+
+    // Merge: group by (resolved_project, hostname) and aggregate
+    let mut merged: std::collections::HashMap<(String, String), ProjectBreakdown> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let resolved = parent_map
+            .get(&row.project)
+            .cloned()
+            .unwrap_or(row.project.clone());
+        let key = (resolved.clone(), row.hostname.clone());
+        let entry = merged.entry(key).or_insert_with(|| ProjectBreakdown {
+            project: resolved,
+            hostname: row.hostname.clone(),
+            total_tokens: 0,
+            turn_count: 0,
+            session_count: 0,
+            last_active: String::new(),
+        });
+        entry.total_tokens += row.total_tokens;
+        entry.turn_count += row.turn_count;
+        entry.session_count += row.session_count;
+        if row.last_active > entry.last_active {
+            entry.last_active = row.last_active;
+        }
+    }
+
+    let mut results: Vec<ProjectBreakdown> = merged.into_values().collect();
+    results.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+    results.truncate(50);
+    results
 }
 
 fn calc_trend(conn: &Connection, bucket: &str) -> Result<String, String> {

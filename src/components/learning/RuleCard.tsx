@@ -20,6 +20,7 @@ function RuleCard({ rule, onDelete }: RuleCardProps) {
   const color = confidenceColor(rule.confidence);
   const pct = Math.round(rule.confidence * 100);
   const isCandidate = rule.state === "candidate";
+  const isAntiPattern = rule.is_anti_pattern;
   const hasFile = rule.file_path.length > 0;
 
   const toggleExpand = async () => {
@@ -45,7 +46,7 @@ function RuleCard({ rule, onDelete }: RuleCardProps) {
   };
 
   return (
-    <div className={`learning-rule-card${isCandidate ? " learning-rule-card--candidate" : ""}`}>
+    <div className={`learning-rule-card${isCandidate ? " learning-rule-card--candidate" : ""}${isAntiPattern ? " learning-rule-card--anti" : ""}`}>
       <div
         className="learning-rule-header"
         onClick={toggleExpand}
@@ -56,7 +57,10 @@ function RuleCard({ rule, onDelete }: RuleCardProps) {
         ) : (
           <span className="learning-rule-expand">&nbsp;</span>
         )}
-        <span className="learning-rule-name">{rule.name}</span>
+        <span className="learning-rule-name">
+          {rule.is_anti_pattern && <span className="learning-rule-anti" title="Anti-pattern: avoid this">!</span>}
+          {rule.name}
+        </span>
         <span className="learning-rule-confidence" style={{ color }}>
           {rule.confidence.toFixed(2)}
         </span>
