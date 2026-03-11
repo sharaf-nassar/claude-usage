@@ -6,6 +6,7 @@ import type {
   LearningSettings,
   LearnedRule,
   LearningRun,
+  LearningLogEvent,
   ToolCount,
 } from "../types";
 
@@ -24,9 +25,7 @@ export function useLearningData() {
   const [unanalyzedCount, setUnanalyzedCount] = useState(0);
   const [topTools, setTopTools] = useState<ToolCount[]>([]);
   const [sparkline, setSparkline] = useState<number[]>([]);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzingInsights, setAnalyzingInsights] = useState(false);
-  const [liveLogs, setLiveLogs] = useState<string[]>([]);
+  const [liveLogs, setLiveLogs] = useState<Record<number, string[]>>({});
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
@@ -47,6 +46,18 @@ export function useLearningData() {
       setUnanalyzedCount(uc);
       setTopTools(tt);
       setSparkline(sp);
+
+      // Clean up liveLogs for runs that are no longer running
+      const runningIds = new Set(ru.filter((r) => r.status === "running").map((r) => r.id));
+      setLiveLogs((prev) => {
+        const next: Record<number, string[]> = {};
+        for (const [id, logs] of Object.entries(prev)) {
+          if (runningIds.has(Number(id))) {
+            next[Number(id)] = logs;
+          }
+        }
+        return next;
+      });
     } catch (e) {
       toast("error", `Failed to load learning data: ${e}`);
     } finally {
@@ -63,8 +74,6 @@ export function useLearningData() {
   useEffect(() => {
     const unlisten = listen("learning-updated", () => {
       refresh();
-      setAnalyzing(false);
-      setAnalyzingInsights(false);
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -72,8 +81,12 @@ export function useLearningData() {
   }, [refresh]);
 
   useEffect(() => {
-    const unlisten = listen<string>("learning-log", (event) => {
-      setLiveLogs((prev) => [...prev, event.payload]);
+    const unlisten = listen<LearningLogEvent>("learning-log", (event) => {
+      const { run_id, message } = event.payload;
+      setLiveLogs((prev) => ({
+        ...prev,
+        [run_id]: [...(prev[run_id] || []), message],
+      }));
     });
     return () => {
       unlisten.then((fn) => fn());
@@ -94,28 +107,11 @@ export function useLearningData() {
   );
 
   const triggerAnalysis = useCallback(async () => {
-    setAnalyzing(true);
-    setLiveLogs([]);
     try {
       await invoke("trigger_analysis");
       await refresh();
     } catch (e) {
       toast("warning", String(e));
-    } finally {
-      setAnalyzing(false);
-    }
-  }, [refresh, toast]);
-
-  const triggerInsights = useCallback(async () => {
-    setAnalyzingInsights(true);
-    setLiveLogs([]);
-    try {
-      await invoke("trigger_insights_analysis");
-      await refresh();
-    } catch (e) {
-      toast("warning", String(e));
-    } finally {
-      setAnalyzingInsights(false);
     }
   }, [refresh, toast]);
 
@@ -131,6 +127,9 @@ export function useLearningData() {
     [refresh, toast],
   );
 
+  // Derive analyzing state from runs data
+  const analyzing = runs.some((r) => r.status === "running");
+
   return {
     settings,
     rules,
@@ -140,12 +139,10 @@ export function useLearningData() {
     topTools,
     sparkline,
     analyzing,
-    analyzingInsights,
     liveLogs,
     loading,
     updateSettings,
     triggerAnalysis,
-    triggerInsights,
     deleteRule,
     refresh,
   };

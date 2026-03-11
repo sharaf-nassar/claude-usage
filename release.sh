@@ -7,7 +7,7 @@ Usage: ./release.sh <command> [args]
 
 Commands:
   bump <major|minor|patch>   Create and push a new version tag
-  retag <version>            Replace an existing tag locally and remotely
+  retag [version]            Replace an existing tag locally and remotely (defaults to latest)
   latest                     Show the latest version tag
 
 Examples:
@@ -76,9 +76,13 @@ cmd_bump() {
 cmd_retag() {
   local version="${1:-}"
   if [[ -z "$version" ]]; then
-    echo "Usage: ./release.sh retag <version>"
-    echo "Example: ./release.sh retag 0.2.1"
-    exit 1
+    local latest
+    latest=$(get_latest_tag)
+    if [[ -z "$latest" ]]; then
+      echo "No version tags found."
+      exit 1
+    fi
+    version=$(parse_version "$latest")
   fi
 
   # Strip v prefix if provided

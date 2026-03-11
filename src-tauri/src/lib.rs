@@ -283,17 +283,11 @@ async fn get_learning_runs(limit: i32) -> Result<Vec<LearningRun>, String> {
 #[tauri::command]
 async fn trigger_analysis(app: tauri::AppHandle) -> Result<(), String> {
     let storage = get_storage()?;
-    let result = learning::spawn_analysis(storage, "on-demand", &app, false).await;
-    let _ = app.emit("learning-updated", ());
-    result
-}
-
-#[tauri::command]
-async fn trigger_insights_analysis(app: tauri::AppHandle) -> Result<(), String> {
-    let storage = get_storage()?;
-    let result = learning::spawn_insights_analysis(storage, &app).await;
-    let _ = app.emit("learning-updated", ());
-    result
+    tauri::async_runtime::spawn(async move {
+        let _ = learning::spawn_analysis(storage, "on-demand", &app, false).await;
+        let _ = app.emit("learning-updated", ());
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -349,6 +343,15 @@ pub fn run() {
         Err(e) => {
             log::error!("Fatal: failed to initialize storage: {e}");
             std::process::exit(1);
+        }
+    }
+
+    // Clean up any runs left in "running" state from a previous crash
+    if let Ok(storage) = get_storage() {
+        match storage.cleanup_interrupted_runs() {
+            Ok(0) => {}
+            Ok(n) => log::info!("Cleaned up {n} interrupted learning run(s)"),
+            Err(e) => log::warn!("Failed to clean up interrupted runs: {e}"),
         }
     }
 
@@ -635,7 +638,6 @@ pub fn run() {
             delete_learned_rule,
             get_learning_runs,
             trigger_analysis,
-            trigger_insights_analysis,
             get_observation_count,
             get_unanalyzed_observation_count,
             get_top_tools,

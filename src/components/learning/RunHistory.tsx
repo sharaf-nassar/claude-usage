@@ -4,108 +4,98 @@ import { timeAgo } from "../../utils/time";
 
 interface RunHistoryProps {
   runs: LearningRun[];
-  analyzing: boolean;
-  analyzingInsights?: boolean;
-  liveLogs: string[];
+  liveLogs: Record<number, string[]>;
 }
 
-const LIVE_RUN_ID = -1;
-
 function formatDuration(ms: number | null): string {
-  if (ms === null) return "—";
+  if (ms === null) return "\u2014";
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function RunHistory({ runs, analyzing, analyzingInsights, liveLogs }: RunHistoryProps) {
+function statusIcon(status: string): { icon: string; className: string } {
+  switch (status) {
+    case "running":
+      return { icon: "", className: "learning-run-icon--live" };
+    case "completed":
+      return { icon: "\u2713", className: "learning-run-icon--ok" };
+    case "interrupted":
+      return { icon: "\u2014", className: "learning-run-icon--interrupted" };
+    default:
+      return { icon: "\u2717", className: "learning-run-icon--fail" };
+  }
+}
+
+function RunHistory({ runs, liveLogs }: RunHistoryProps) {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
-  const isRunning = analyzing || !!analyzingInsights;
+  const prevRunsRef = useRef<LearningRun[]>([]);
 
-  // Auto-select the live run when any analysis starts
+  // Auto-select when a new running run appears
   useEffect(() => {
-    if (isRunning) {
-      setSelectedId(LIVE_RUN_ID);
+    const prevIds = new Set(prevRunsRef.current.map((r) => r.id));
+    const newRunning = runs.find(
+      (r) => r.status === "running" && !prevIds.has(r.id),
+    );
+    if (newRunning) {
+      setSelectedId(newRunning.id);
     }
-  }, [isRunning]);
+    prevRunsRef.current = runs;
+  }, [runs]);
 
   // Auto-scroll logs to bottom when new entries arrive
+  const selectedLogs = selectedId !== null ? liveLogs[selectedId] : undefined;
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [liveLogs, selectedId]);
+  }, [selectedLogs?.length, selectedId]);
 
-  const selected = selectedId === LIVE_RUN_ID
-    ? null
-    : runs.find((r) => r.id === selectedId) ?? null;
-  const showLive = selectedId === LIVE_RUN_ID;
+  const selected = runs.find((r) => r.id === selectedId) ?? null;
 
   return (
     <div className="learning-section">
       <div className="learning-section-header">RECENT RUNS</div>
 
-      {!isRunning && runs.length === 0 ? (
+      {runs.length === 0 ? (
         <div className="learning-empty">No analysis runs yet</div>
       ) : (
         <div className="learning-runs-list">
-          {isRunning && (
-            <div
-              className={`learning-run-row${showLive ? " learning-run-row--selected" : ""}`}
-              onClick={() =>
-                setSelectedId(showLive ? null : LIVE_RUN_ID)
-              }
-            >
-              <span className="learning-run-icon learning-run-icon--live">
-                <span className="learning-run-live-dot" />
-              </span>
-              <span className="learning-run-trigger">{analyzingInsights ? "insights" : "on-demand"}</span>
-              <span className="learning-run-result">running…</span>
-              <span className="learning-run-time">now</span>
-            </div>
-          )}
-          {runs.map((run) => (
-            <div
-              key={run.id}
-              className={`learning-run-row${run.id === selectedId ? " learning-run-row--selected" : ""}`}
-              onClick={() =>
-                setSelectedId(run.id === selectedId ? null : run.id)
-              }
-            >
-              <span
-                className={`learning-run-icon ${run.status === "completed" ? "learning-run-icon--ok" : "learning-run-icon--fail"}`}
+          {runs.map((run) => {
+            const { icon, className } = statusIcon(run.status);
+            return (
+              <div
+                key={run.id}
+                className={`learning-run-row${run.id === selectedId ? " learning-run-row--selected" : ""}`}
+                onClick={() =>
+                  setSelectedId(run.id === selectedId ? null : run.id)
+                }
               >
-                {run.status === "completed" ? "\u2713" : "\u2717"}
-              </span>
-              <span className="learning-run-trigger">{run.trigger_mode}</span>
-              <span className="learning-run-result">
-                {run.status === "completed"
-                  ? `+${run.rules_created} rule${run.rules_created !== 1 ? "s" : ""}`
-                  : "failed"}
-              </span>
-              <span className="learning-run-time">
-                {timeAgo(run.created_at)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {showLive && (
-        <div className="learning-run-detail">
-          <div className="learning-run-detail-row">
-            <span className="learning-run-detail-label">Status</span>
-            <span className="learning-run-icon--live-text">running</span>
-          </div>
-          <div className="learning-run-detail-row">
-            <span className="learning-run-detail-label">Trigger</span>
-            <span>on-demand</span>
-          </div>
-          {liveLogs.length > 0 && (
-            <pre className="learning-run-detail-logs" ref={logRef}>
-              {liveLogs.join("\n")}
-            </pre>
-          )}
+                <span className={`learning-run-icon ${className}`}>
+                  {run.status === "running" ? (
+                    <span className="learning-run-live-dot" />
+                  ) : (
+                    icon
+                  )}
+                </span>
+                <span className="learning-run-trigger">
+                  {run.trigger_mode}
+                </span>
+                <span className="learning-run-result">
+                  {run.status === "running"
+                    ? "running\u2026"
+                    : run.status === "completed"
+                      ? `+${run.rules_created} rule${run.rules_created !== 1 ? "s" : ""}`
+                      : run.status === "interrupted"
+                        ? "interrupted"
+                        : "failed"}
+                </span>
+                <span className="learning-run-time">
+                  {run.status === "running" ? "now" : timeAgo(run.created_at)}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -114,11 +104,7 @@ function RunHistory({ runs, analyzing, analyzingInsights, liveLogs }: RunHistory
           <div className="learning-run-detail-row">
             <span className="learning-run-detail-label">Status</span>
             <span
-              className={
-                selected.status === "completed"
-                  ? "learning-run-icon--ok"
-                  : "learning-run-icon--fail"
-              }
+              className={statusIcon(selected.status).className}
             >
               {selected.status}
             </span>
@@ -127,32 +113,45 @@ function RunHistory({ runs, analyzing, analyzingInsights, liveLogs }: RunHistory
             <span className="learning-run-detail-label">Trigger</span>
             <span>{selected.trigger_mode}</span>
           </div>
-          <div className="learning-run-detail-row">
-            <span className="learning-run-detail-label">Observations</span>
-            <span>{selected.observations_analyzed}</span>
-          </div>
-          <div className="learning-run-detail-row">
-            <span className="learning-run-detail-label">Rules created</span>
-            <span>{selected.rules_created}</span>
-          </div>
-          {selected.rules_updated > 0 && (
-            <div className="learning-run-detail-row">
-              <span className="learning-run-detail-label">Rules updated</span>
-              <span>{selected.rules_updated}</span>
-            </div>
+          {selected.status !== "running" && (
+            <>
+              <div className="learning-run-detail-row">
+                <span className="learning-run-detail-label">Observations</span>
+                <span>{selected.observations_analyzed}</span>
+              </div>
+              <div className="learning-run-detail-row">
+                <span className="learning-run-detail-label">Rules created</span>
+                <span>{selected.rules_created}</span>
+              </div>
+              {selected.rules_updated > 0 && (
+                <div className="learning-run-detail-row">
+                  <span className="learning-run-detail-label">
+                    Rules updated
+                  </span>
+                  <span>{selected.rules_updated}</span>
+                </div>
+              )}
+              <div className="learning-run-detail-row">
+                <span className="learning-run-detail-label">Duration</span>
+                <span>{formatDuration(selected.duration_ms)}</span>
+              </div>
+              <div className="learning-run-detail-row">
+                <span className="learning-run-detail-label">Time</span>
+                <span>
+                  {new Date(selected.created_at).toLocaleString()}
+                </span>
+              </div>
+            </>
           )}
-          <div className="learning-run-detail-row">
-            <span className="learning-run-detail-label">Duration</span>
-            <span>{formatDuration(selected.duration_ms)}</span>
-          </div>
-          <div className="learning-run-detail-row">
-            <span className="learning-run-detail-label">Time</span>
-            <span>{new Date(selected.created_at).toLocaleString()}</span>
-          </div>
           {selected.error && (
             <div className="learning-run-detail-error">{selected.error}</div>
           )}
-          {selected.logs && (
+          {selected.status === "running" && liveLogs[selected.id]?.length > 0 && (
+            <pre className="learning-run-detail-logs" ref={logRef}>
+              {liveLogs[selected.id].join("\n")}
+            </pre>
+          )}
+          {selected.status !== "running" && selected.logs && (
             <pre className="learning-run-detail-logs">{selected.logs}</pre>
           )}
         </div>

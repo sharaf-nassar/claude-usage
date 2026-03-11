@@ -1254,6 +1254,49 @@ impl Storage {
         Ok(conn.last_insert_rowid())
     }
 
+    pub fn create_learning_run(&self, trigger_mode: &str) -> Result<i64, String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO learning_runs (trigger_mode, status, observations_analyzed, rules_created, rules_updated)
+             VALUES (?1, 'running', 0, 0, 0)",
+            params![trigger_mode],
+        )
+        .map_err(|e| format!("Create learning run error: {e}"))?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_learning_run(&self, id: i64, payload: &LearningRunPayload) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE learning_runs SET observations_analyzed=?2, rules_created=?3, rules_updated=?4,
+             duration_ms=?5, status=?6, error=?7, logs=?8
+             WHERE id=?1",
+            params![
+                id,
+                payload.observations_analyzed,
+                payload.rules_created,
+                payload.rules_updated,
+                payload.duration_ms,
+                payload.status,
+                payload.error,
+                payload.logs,
+            ],
+        )
+        .map_err(|e| format!("Update learning run error: {e}"))?;
+        Ok(())
+    }
+
+    pub fn cleanup_interrupted_runs(&self) -> Result<u64, String> {
+        let conn = self.conn.lock();
+        let count = conn
+            .execute(
+                "UPDATE learning_runs SET status='interrupted' WHERE status='running'",
+                [],
+            )
+            .map_err(|e| format!("Cleanup interrupted runs error: {e}"))?;
+        Ok(count as u64)
+    }
+
     pub fn get_learning_runs(&self, limit: i64) -> Result<Vec<LearningRun>, String> {
         let conn = self.conn.lock();
         let mut stmt = conn
@@ -1685,91 +1728,6 @@ impl Storage {
         )
         .map_err(|e| format!("Observation cleanup error: {e}"))?;
         Ok(())
-    }
-
-    /// Add a project to a rule's confirmed_projects list (comma-separated).
-    /// Returns the updated list of confirmed projects.
-    pub fn add_rule_confirmed_project(
-        &self,
-        name: &str,
-        project: &str,
-    ) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock();
-        let current: Option<String> = conn
-            .query_row(
-                "SELECT confirmed_projects FROM learned_rules WHERE name = ?1",
-                params![name],
-                |row| row.get(0),
-            )
-            .ok()
-            .flatten();
-
-        let mut projects: Vec<String> = current
-            .as_deref()
-            .unwrap_or("")
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-
-        if !projects.iter().any(|p| p == project) {
-            projects.push(project.to_string());
-            let joined = projects.join(",");
-            conn.execute(
-                "UPDATE learned_rules SET confirmed_projects = ?1, updated_at = datetime('now') WHERE name = ?2",
-                params![joined, name],
-            )
-            .map_err(|e| format!("Update confirmed_projects error: {e}"))?;
-        }
-
-        Ok(projects)
-    }
-
-    /// Get rules that have been confirmed in 3+ distinct projects (promotion candidates).
-    /// Filters by computed confidence (Wilson lower bound with freshness decay) rather
-    /// than the `state` column, which is only set on INSERT and may be stale.
-    pub fn get_promotion_candidates(&self) -> Result<Vec<(String, String)>, String> {
-        let conn = self.conn.lock();
-        let mut stmt = conn
-            .prepare_cached(
-                "SELECT name, confirmed_projects, alpha, beta_param, last_evidence_at
-                 FROM learned_rules
-                 WHERE confirmed_projects IS NOT NULL",
-            )
-            .map_err(|e| format!("Prepare error: {e}"))?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, f64>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            })
-            .map_err(|e| format!("Query error: {e}"))?;
-
-        let mut candidates = Vec::new();
-        for row in rows {
-            let (name, projects_str, alpha, beta, last_ev) =
-                row.map_err(|e| format!("Row error: {e}"))?;
-
-            // Compute effective confidence using Wilson lower bound + freshness decay
-            let fresh = freshness_factor(last_ev.as_deref());
-            let confidence = wilson_lower_bound(alpha * fresh, beta * fresh);
-
-            // Skip invalidated rules (confidence < 0.4) or stale rules (freshness < 0.3)
-            if confidence < 0.4 || fresh < 0.3 {
-                continue;
-            }
-
-            let count = projects_str.split(',').filter(|s| !s.is_empty()).count();
-            if count >= 3 {
-                candidates.push((name, projects_str));
-            }
-        }
-        Ok(candidates)
     }
 
     pub fn aggregate_and_cleanup_tokens(&self) -> Result<(), String> {

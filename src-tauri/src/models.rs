@@ -305,3 +305,10 @@ pub struct AnalysisOutput {
     #[serde(default)]
     pub verdicts: Vec<RuleVerdict>,
 }
+
+// Tagged learning log event for real-time frontend streaming
+#[derive(Serialize, Clone, Debug)]
+pub struct LearningLogEvent {
+    pub run_id: i64,
+    pub message: String,
+}

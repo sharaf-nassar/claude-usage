@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::models::LearningRunPayload;
+use crate::models::{LearningLogEvent, LearningRunPayload};
 use crate::storage::Storage;
 use tauri::Emitter;
 
@@ -93,7 +93,8 @@ fn compress_observation(text: &str, max_len: usize) -> String {
     sanitize_for_prompt(safe_truncate(&joined, max_len))
 }
 
-/// Spawns a background analysis using `claude` CLI with Haiku model.
+/// Spawns a background analysis using the Anthropic API.
+/// Uses Sonnet for full analysis runs, Haiku for lightweight micro-updates.
 /// Called on session-end, periodic timer, or on-demand.
 /// When `micro` is true, uses a lower observation threshold and only creates
 /// candidates (never writes .md files), with at most 1 new pattern extracted.
@@ -103,13 +104,22 @@ pub async fn spawn_analysis(
     app: &tauri::AppHandle,
     micro: bool,
 ) -> Result<(), String> {
+    // Create the run record immediately so it appears in the frontend
+    let run_id = storage
+        .create_learning_run(trigger)
+        .map_err(|e| format!("Failed to create learning run: {e}"))?;
+    let _ = app.emit("learning-updated", ());
+
     let mut logs: Vec<String> = Vec::new();
 
     macro_rules! run_log {
         ($($arg:tt)*) => {{
             let msg = format!($($arg)*);
             log::debug!("{msg}");
-            let _ = app.emit("learning-log", &msg);
+            let _ = app.emit("learning-log", &LearningLogEvent {
+                run_id,
+                message: msg.clone(),
+            });
             logs.push(msg);
         }};
     }
@@ -147,9 +157,24 @@ pub async fn spawn_analysis(
         .map_err(|e| format!("Failed to get unanalyzed count: {e}"))?;
 
     if unanalyzed < min_obs {
-        return Err(format!(
+        let msg = format!(
             "Only {unanalyzed} unanalyzed observations (need {min_obs}). Keep using tools and try again later."
-        ));
+        );
+        run_log!("{msg}");
+        let _ = storage.update_learning_run(
+            run_id,
+            &LearningRunPayload {
+                trigger_mode: trigger.to_string(),
+                observations_analyzed: 0,
+                rules_created: 0,
+                rules_updated: 0,
+                duration_ms: Some(0),
+                status: "failed".to_string(),
+                error: Some(msg.clone()),
+                logs: Some(logs.join("\n")),
+            },
+        );
+        return Err(msg);
     }
 
     run_log!("Found {unanalyzed} unanalyzed observations (threshold: {min_obs})");
@@ -164,6 +189,25 @@ pub async fn spawn_analysis(
         .map_err(|e| format!("Failed to get observations: {e}"))?;
 
     run_log!("Loaded {} observations for analysis", observations.len());
+
+    // Gather insights (non-micro only)
+    let insights = if !micro {
+        let mut insights_logs: Vec<String> = Vec::new();
+        let result = gather_insights(&mut insights_logs, app, run_id).await;
+        // Merge insights logs into main logs
+        for log_msg in insights_logs {
+            logs.push(log_msg);
+        }
+        result
+    } else {
+        None
+    };
+
+    if let Some(ref data) = insights {
+        run_log!("Insights data available: {} facets", data.facet_count);
+    } else if !micro {
+        run_log!("Continuing without insights data");
+    }
 
     // 3. Read existing rule file names
     let existing_rules = storage.get_learned_rules().unwrap_or_default();
@@ -289,17 +333,41 @@ pub async fn spawn_analysis(
     // Adjust prompt based on mode
     let max_rules = if micro { 1 } else { 3 };
 
+    let insights_section = if let Some(ref data) = insights {
+        format!(
+            "\n\nDATA SOURCE 2 — SESSION-LEVEL INSIGHTS:\n\
+             Friction types (across {} sessions):\n\
+             {}\n\
+             \n\
+             Session outcomes:\n\
+             {}\n\
+             \n\
+             Specific friction details (sample):\n\
+             {}\n\
+             \n\
+             Session summaries (sample):\n\
+             {}",
+            data.facet_count,
+            data.friction_summary,
+            data.outcome_summary,
+            data.friction_details.join("\n"),
+            data.session_summaries.join("\n"),
+        )
+    } else {
+        String::new()
+    };
+
     let prompt = format!(
-        "Analyze these Claude Code tool-use observations and:\n\
+        "Analyze these Claude Code usage patterns and:\n\
          \n\
-         PART 1: Identify 0-{max_rules} NEW behavioral patterns that should become persistent rules.\n\
-         Focus on repeated corrections, error sequences, and consistent preferences.\n\
+         PART 1: Identify 0-{max_rules} NEW behavioral or workflow patterns that should become persistent rules.\n\
+         Focus on repeated corrections, error sequences, consistent preferences, and workflow friction.\n\
          For each pattern, determine if it is a positive pattern (\"do this\") or an \
          ANTI-PATTERN (\"avoid this\" — a recurring mistake or bad practice observed).\n\
          Set is_anti_pattern to true for anti-patterns.\n\
          \n\
-         PART 2: For each existing rule listed below, assess whether the new observations \
-         SUPPORT, CONTRADICT, or are IRRELEVANT to that rule.\n\
+         PART 2: For each existing rule listed below, assess whether the new data \
+         SUPPORTS, CONTRADICTS, or is IRRELEVANT to that rule.\n\
          \n\
          Existing rules (evaluate each for Part 2):\n\
          {existing_rules_summary}\n\
@@ -307,37 +375,46 @@ pub async fn spawn_analysis(
          Existing rule filenames (do NOT create new rules that duplicate these):\n\
          {existing_list}\n\
          \n\
-         Recent observations grouped by project:\n\
-         {obs_summary}\n\
+         DATA SOURCE 1 — TOOL-USE OBSERVATIONS:\n\
+         {obs_summary}\
+         {insights_section}\n\
          \n\
          Rules for the name field: lowercase letters, digits, and hyphens only.\n\
          Use today's date {today} in the Learned field of new rule content.\n\
          For anti-patterns, prefix the content with \"ANTI-PATTERN: Avoid this.\" and explain what to do instead.\n\
-         For verdicts, strength indicates how strongly the observations support or contradict the rule.\n\
+         For verdicts, strength indicates how strongly the data supports or contradicts the rule.\n\
          If no new patterns and no relevant verdicts, output: {{\"new_rules\": [], \"verdicts\": []}}"
     );
 
     run_log!("Prompt size: {} chars", prompt.len());
 
-    // 5. Call Anthropic API via Rig
-    run_log!("Invoking Anthropic API (model=claude-haiku-4-5-20251001)");
+    // 5. Call Anthropic API via Rig — Haiku for micro-updates, Sonnet for full analysis
+    let model = if micro {
+        crate::ai_client::MODEL_HAIKU
+    } else {
+        crate::ai_client::MODEL_SONNET
+    };
+    run_log!("Invoking Anthropic API (model={model})");
 
-    let analysis = crate::ai_client::analyze_observations(&prompt)
+    let analysis = crate::ai_client::analyze_observations(&prompt, model)
         .await
         .map_err(|e| {
             let error_msg = format!("Anthropic API failed: {e}");
             run_log!("FAILED: {error_msg}");
             let duration_ms = start.elapsed().as_millis() as i64;
-            let _ = storage.store_learning_run(&LearningRunPayload {
-                trigger_mode: trigger_mode.clone(),
-                observations_analyzed: observations.len() as i64,
-                rules_created: 0,
-                rules_updated: 0,
-                duration_ms: Some(duration_ms),
-                status: "failed".to_string(),
-                error: Some(error_msg.clone()),
-                logs: Some(logs.join("\n")),
-            });
+            let _ = storage.update_learning_run(
+                run_id,
+                &LearningRunPayload {
+                    trigger_mode: trigger_mode.clone(),
+                    observations_analyzed: observations.len() as i64,
+                    rules_created: 0,
+                    rules_updated: 0,
+                    duration_ms: Some(duration_ms),
+                    status: "failed".to_string(),
+                    error: Some(error_msg.clone()),
+                    logs: Some(logs.join("\n")),
+                },
+            );
             error_msg
         })?;
 
@@ -355,39 +432,7 @@ pub async fn spawn_analysis(
         .join("rules")
         .join("learned");
 
-    // Determine dominant project from observations
-    let dominant_project: Option<String> = {
-        let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        for obs in &observations {
-            if let Some(cwd) = obs.get("cwd").and_then(|v| v.as_str()) {
-                *counts.entry(cwd).or_default() += 1;
-            }
-        }
-        counts
-            .into_iter()
-            .max_by_key(|(_, count)| *count)
-            .map(|(cwd, _)| cwd.to_string())
-    };
-
-    // Determine subdirectory: project slug or "global"
-    let project_slug = dominant_project
-        .as_deref()
-        .map(|p| {
-            p.rsplit('/')
-                .next()
-                .unwrap_or("global")
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' {
-                        c
-                    } else {
-                        '-'
-                    }
-                })
-                .collect::<String>()
-        })
-        .unwrap_or_else(|| "global".to_string());
-    let rules_dir = base_rules_dir.join(&project_slug);
+    let rules_dir = base_rules_dir.clone();
     std::fs::create_dir_all(&rules_dir).map_err(|e| format!("Failed to create rules dir: {e}"))?;
 
     let existing_rule_names: std::collections::HashSet<String> =
@@ -402,7 +447,7 @@ pub async fn spawn_analysis(
             min_confidence,
             micro,
             observation_count: observations.len() as i64,
-            project: dominant_project.clone(),
+            project: None,
         },
         &mut logs,
         app,
@@ -425,27 +470,6 @@ pub async fn spawn_analysis(
                 } else {
                     verdicts_applied += 1;
                     run_log!("Reinforced '{}' (strength={:.2})", verdict.name, strength);
-
-                    // Track cross-project confirmation for promotion
-                    if let Some(ref proj) = dominant_project {
-                        match storage.add_rule_confirmed_project(&verdict.name, proj) {
-                            Ok(projects) => {
-                                if projects.len() >= 3 {
-                                    run_log!(
-                                        "Rule '{}' confirmed in {} projects (promotion candidate)",
-                                        verdict.name,
-                                        projects.len()
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Failed to track cross-project confirmation for '{}': {e}",
-                                    verdict.name
-                                );
-                            }
-                        }
-                    }
                 }
             }
             "contradict" => {
@@ -461,47 +485,7 @@ pub async fn spawn_analysis(
     }
     run_log!("Applied {verdicts_applied} verdicts to existing rules");
 
-    // 9. Cross-project promotion: promote rules confirmed in 3+ projects to global/
-    if !micro {
-        let global_dir = base_rules_dir.join("global");
-        match storage.get_promotion_candidates() {
-            Ok(candidates) => {
-                for (name, projects_str) in &candidates {
-                    let global_path = global_dir.join(format!("{name}.md"));
-                    if global_path.exists() {
-                        continue; // Already promoted
-                    }
-
-                    // Find the existing rule file in any project subdirectory
-                    let existing = existing_rules.iter().find(|r| &r.name == name);
-                    if let Some(rule) = existing
-                        && !rule.file_path.is_empty()
-                    {
-                        let source = std::path::Path::new(&rule.file_path);
-                        if source.exists() {
-                            std::fs::create_dir_all(&global_dir).ok();
-                            if let Ok(content) = std::fs::read_to_string(source) {
-                                if std::fs::write(&global_path, &content).is_ok() {
-                                    run_log!(
-                                        "Promoted '{}' to global (confirmed in: {})",
-                                        name,
-                                        projects_str
-                                    );
-                                } else {
-                                    log::warn!(
-                                        "Failed to write promoted rule '{name}' to global dir"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => log::warn!("Failed to get promotion candidates: {e}"),
-        }
-    }
-
-    // 10. Consolidation check: detect rules with overlapping names/domains
+    // 9. Consolidation check: detect rules with overlapping names/domains
     if !micro {
         let fresh_rules = storage.get_learned_rules().unwrap_or_default();
         let mut domain_groups: std::collections::HashMap<String, Vec<String>> =
@@ -549,16 +533,19 @@ pub async fn spawn_analysis(
         "Complete: created {rules_created}, updated {rules_updated}, verdicts {verdicts_applied} in {duration_ms}ms"
     );
 
-    let _ = storage.store_learning_run(&LearningRunPayload {
-        trigger_mode,
-        observations_analyzed: observations.len() as i64,
-        rules_created,
-        rules_updated,
-        duration_ms: Some(duration_ms),
-        status: "completed".to_string(),
-        error: None,
-        logs: Some(logs.join("\n")),
-    });
+    let _ = storage.update_learning_run(
+        run_id,
+        &LearningRunPayload {
+            trigger_mode,
+            observations_analyzed: observations.len() as i64,
+            rules_created,
+            rules_updated,
+            duration_ms: Some(duration_ms),
+            status: "completed".to_string(),
+            error: None,
+            logs: Some(logs.join("\n")),
+        },
+    );
 
     Ok(())
 }
@@ -583,80 +570,86 @@ struct InsightsFacet {
     session_id: String,
 }
 
-/// Spawns `/insights` via the claude CLI, then reads the generated facets
-/// and feeds friction/outcome patterns into the learning pipeline.
-pub async fn spawn_insights_analysis(
-    storage: &'static Storage,
-    app: &tauri::AppHandle,
-) -> Result<(), String> {
-    let mut logs: Vec<String> = Vec::new();
+/// Aggregated insights data from session facets.
+struct InsightsData {
+    facet_count: usize,
+    friction_summary: String,
+    outcome_summary: String,
+    friction_details: Vec<String>,
+    session_summaries: Vec<String>,
+}
 
-    macro_rules! run_log {
+/// Gathers session insights by running `claude /insights --print` and parsing facet JSONs.
+/// Returns `None` on any failure (CLI error, no facets, parse errors).
+async fn gather_insights(
+    logs: &mut Vec<String>,
+    app: &tauri::AppHandle,
+    run_id: i64,
+) -> Option<InsightsData> {
+    macro_rules! insight_log {
         ($($arg:tt)*) => {{
             let msg = format!($($arg)*);
             log::debug!("{msg}");
-            let _ = app.emit("learning-log", &msg);
+            let _ = app.emit("learning-log", &LearningLogEvent {
+                run_id,
+                message: msg.clone(),
+            });
             logs.push(msg);
         }};
     }
 
-    let start = Instant::now();
-
-    // 1. Run `claude /insights` to generate facets + report
-    run_log!("Running claude /insights to generate session analysis...");
+    insight_log!("Running claude /insights to generate session analysis...");
 
     let shell_path = crate::config::shell_path().to_string();
-    let insights_output = tokio::task::spawn_blocking(move || {
+    let insights_output = match tokio::task::spawn_blocking(move || {
         std::process::Command::new("claude")
             .args(["/insights", "--print"])
             .env("PATH", &shell_path)
             .output()
     })
     .await
-    .map_err(|e| format!("Task join error: {e}"))?
-    .map_err(|e| format!("Failed to spawn claude CLI: {e}"))?;
-
-    let stderr = String::from_utf8_lossy(&insights_output.stderr).to_string();
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            insight_log!("Warning: Failed to spawn claude CLI: {e}");
+            return None;
+        }
+        Err(e) => {
+            insight_log!("Warning: Task join error: {e}");
+            return None;
+        }
+    };
 
     if !insights_output.status.success() {
-        let error_msg = format!(
-            "claude /insights failed (exit {:?}): {}",
+        let stderr = String::from_utf8_lossy(&insights_output.stderr);
+        insight_log!(
+            "Warning: claude /insights failed (exit {:?}): {}",
             insights_output.status.code(),
             &stderr[..stderr.len().min(500)]
         );
-        run_log!("FAILED: {error_msg}");
-        let duration_ms = start.elapsed().as_millis() as i64;
-        let _ = storage.store_learning_run(&LearningRunPayload {
-            trigger_mode: "insights".to_string(),
-            observations_analyzed: 0,
-            rules_created: 0,
-            rules_updated: 0,
-            duration_ms: Some(duration_ms),
-            status: "failed".to_string(),
-            error: Some(error_msg.clone()),
-            logs: Some(logs.join("\n")),
-        });
-        return Err(error_msg);
+        return None;
     }
 
-    run_log!("claude /insights completed successfully");
+    insight_log!("claude /insights completed successfully");
 
-    // 2. Read facets JSON files
-    let facets_dir = dirs::home_dir()
-        .ok_or("Cannot determine home directory")?
+    let facets_dir = dirs::home_dir()?
         .join(".claude")
         .join("usage-data")
         .join("facets");
 
     if !facets_dir.exists() {
-        let error_msg = "No facets directory found after running /insights".to_string();
-        run_log!("FAILED: {error_msg}");
-        return Err(error_msg);
+        insight_log!("Warning: No facets directory found after running /insights");
+        return None;
     }
 
     let mut facets: Vec<InsightsFacet> = Vec::new();
-    let entries =
-        std::fs::read_dir(&facets_dir).map_err(|e| format!("Failed to read facets dir: {e}"))?;
+    let entries = match std::fs::read_dir(&facets_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            insight_log!("Warning: Failed to read facets dir: {e}");
+            return None;
+        }
+    };
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -675,15 +668,13 @@ pub async fn spawn_insights_analysis(
         }
     }
 
-    run_log!("Loaded {} session facets", facets.len());
+    insight_log!("Loaded {} session facets", facets.len());
 
     if facets.is_empty() {
-        let error_msg = "No valid facets found to analyze".to_string();
-        run_log!("FAILED: {error_msg}");
-        return Err(error_msg);
+        insight_log!("Warning: No valid facets found to analyze");
+        return None;
     }
 
-    // 3. Build aggregate friction summary
     let mut friction_agg: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     let mut outcome_counts: std::collections::HashMap<String, i64> =
         std::collections::HashMap::new();
@@ -703,7 +694,6 @@ pub async fn spawn_insights_analysis(
         }
     }
 
-    // 4. Build prompt for Haiku
     let friction_summary = friction_agg
         .iter()
         .map(|(k, v)| format!("  - {k}: {v} occurrences"))
@@ -716,146 +706,16 @@ pub async fn spawn_insights_analysis(
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Take up to 30 friction details (most recent/diverse)
-    let detail_sample: Vec<&str> = friction_details
-        .iter()
-        .take(30)
-        .map(|s| s.as_str())
-        .collect();
+    friction_details.truncate(30);
+    summaries.truncate(20);
 
-    // Take up to 20 session summaries for context
-    let summary_sample: Vec<&str> = summaries.iter().take(20).map(|s| s.as_str()).collect();
-
-    // Read existing rules to avoid duplicates
-    let existing_rules = storage.get_learned_rules().unwrap_or_default();
-    let existing_list = existing_rules
-        .iter()
-        .map(|r| {
-            format!(
-                "- {} (domain: {})",
-                r.name,
-                r.domain.as_deref().unwrap_or("general")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let today = chrono::Utc::now().format("%Y-%m-%d");
-
-    let prompt = format!(
-        "Analyze these Claude Code /insights session-level patterns and extract 0-3 \
-         WORKFLOW-LEVEL rules (not coding-style rules).\n\
-         \n\
-         These rules should help the USER work more effectively with Claude Code — \
-         things like how to prompt, when to be explicit, what to avoid.\n\
-         \n\
-         FRICTION TYPES (aggregate across {total} sessions):\n\
-         {friction_summary}\n\
-         \n\
-         SESSION OUTCOMES:\n\
-         {outcome_summary}\n\
-         \n\
-         SPECIFIC FRICTION DETAILS (sample):\n\
-         {details}\n\
-         \n\
-         SESSION SUMMARIES (sample):\n\
-         {session_summaries}\n\
-         \n\
-         EXISTING RULES (do NOT duplicate these):\n\
-         {existing_list}\n\
-         \n\
-         Rules for the name field: lowercase letters, digits, and hyphens only.\n\
-         Use today's date {today} in the Learned field of new rule content.\n\
-         Domain MUST be \"workflow\" for all rules.\n\
-         For anti-patterns, prefix content with \"ANTI-PATTERN: Avoid this.\"\n\
-         If no clear patterns emerge, output: {{\"new_rules\": [], \"verdicts\": []}}",
-        total = facets.len(),
-        details = detail_sample.join("\n"),
-        session_summaries = summary_sample.join("\n"),
-    );
-
-    run_log!(
-        "Built insights prompt: {} chars from {} facets",
-        prompt.len(),
-        facets.len()
-    );
-
-    // 5. Invoke Haiku via Anthropic API
-    run_log!("Invoking Anthropic API (model=claude-haiku-4-5-20251001)");
-
-    let analysis = crate::ai_client::analyze_observations(&prompt)
-        .await
-        .map_err(|e| {
-            let error_msg = format!("Anthropic API failed: {e}");
-            run_log!("FAILED: {error_msg}");
-            let duration_ms = start.elapsed().as_millis() as i64;
-            let _ = storage.store_learning_run(&LearningRunPayload {
-                trigger_mode: "insights".to_string(),
-                observations_analyzed: facets.len() as i64,
-                rules_created: 0,
-                rules_updated: 0,
-                duration_ms: Some(duration_ms),
-                status: "failed".to_string(),
-                error: Some(error_msg.clone()),
-                logs: Some(logs.join("\n")),
-            });
-            error_msg
-        })?;
-
-    run_log!("Parsed {} candidate rules", analysis.new_rules.len());
-
-    // 7. Write rule files using shared helper
-    let min_confidence: f64 = storage
-        .get_setting("learning.min_confidence")
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.95);
-
-    let base_rules_dir = dirs::home_dir()
-        .ok_or("Cannot determine home directory")?
-        .join(".claude")
-        .join("rules")
-        .join("learned");
-
-    let rules_dir = base_rules_dir.join("insights");
-    std::fs::create_dir_all(&rules_dir).map_err(|e| format!("Failed to create rules dir: {e}"))?;
-
-    let existing_rule_names: std::collections::HashSet<String> =
-        existing_rules.iter().map(|r| r.name.clone()).collect();
-
-    let (rules_created, rules_updated) = write_rule_files(
-        &WriteRuleParams {
-            rules: &analysis.new_rules,
-            rules_dir: &rules_dir,
-            storage,
-            existing_rule_names: &existing_rule_names,
-            min_confidence,
-            micro: false, // insights are never micro
-            observation_count: facets.len() as i64,
-            project: None, // insights rules are not project-scoped
-        },
-        &mut logs,
-        app,
-    )?;
-
-    let duration_ms = start.elapsed().as_millis() as i64;
-    run_log!(
-        "Insights analysis complete: {rules_created} created, {rules_updated} updated in {duration_ms}ms"
-    );
-
-    let _ = storage.store_learning_run(&LearningRunPayload {
-        trigger_mode: "insights".to_string(),
-        observations_analyzed: facets.len() as i64,
-        rules_created,
-        rules_updated,
-        duration_ms: Some(duration_ms),
-        status: "completed".to_string(),
-        error: None,
-        logs: Some(logs.join("\n")),
-    });
-
-    Ok(())
+    Some(InsightsData {
+        facet_count: facets.len(),
+        friction_summary,
+        outcome_summary,
+        friction_details,
+        session_summaries: summaries,
+    })
 }
 
 /// Parameters for the shared rule-writing helper.
@@ -870,7 +730,7 @@ struct WriteRuleParams<'a> {
     project: Option<String>,
 }
 
-/// Shared rule-writing logic used by both `spawn_analysis` and `spawn_insights_analysis`.
+/// Shared rule-writing logic used by `spawn_analysis`.
 /// Validates rule names, checks path traversal, stores metadata in DB, and optionally
 /// writes .md files when confidence exceeds threshold.
 /// Returns (rules_created, rules_updated).

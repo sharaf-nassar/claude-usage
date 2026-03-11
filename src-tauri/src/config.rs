@@ -85,6 +85,7 @@ fn read_credentials() -> Result<serde_json::Value, String> {
 
 /// Write credentials JSON back to file (used on Linux; skipped on macOS where
 /// Claude Code owns the Keychain entry).
+#[cfg(not(target_os = "macos"))]
 fn write_credentials_file(data: &serde_json::Value) -> Result<(), String> {
     let path = credentials_path().ok_or("Cannot determine home directory")?;
     let json = serde_json::to_string_pretty(data)

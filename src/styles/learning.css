@@ -44,29 +44,6 @@
   margin-left: auto;
 }
 
-.learning-insights-btn {
-  background: #1e1e24;
-  border: 1px solid #F59E0B;
-  color: #F59E0B;
-  border-radius: 4px;
-  padding: 2px 10px;
-  font-size: 9px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  margin-left: auto;
-  letter-spacing: 0.5px;
-}
-
-.learning-insights-btn:hover:not(:disabled) {
-  background: rgba(245, 158, 11, 0.1);
-}
-
-.learning-insights-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 .learning-toggle {
   display: flex;
   align-items: center;
@@ -512,6 +489,10 @@
 
 .learning-run-icon--fail {
   color: #EF4444;
+}
+
+.learning-run-icon--interrupted {
+  color: var(--text-muted, #666);
 }
 
 .learning-run-trigger {

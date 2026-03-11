@@ -142,6 +142,11 @@ export interface LearningRun {
   created_at: string;
 }
 
+export interface LearningLogEvent {
+  run_id: number;
+  message: string;
+}
+
 export interface ToolCount {
   tool_name: string;
   count: number;

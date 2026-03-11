@@ -5,33 +5,34 @@ use rig::providers::anthropic;
 use crate::config;
 use crate::models::AnalysisOutput;
 
-const MODEL: &str = "claude-haiku-4-5-20251001";
+pub const MODEL_HAIKU: &str = "claude-haiku-4-5-20251001";
+pub const MODEL_SONNET: &str = "claude-sonnet-4-5-20250929";
 
 /// Analyze observations using the Anthropic API via Rig.
 ///
-/// Sends the prompt to Haiku with `prompt_typed` to guarantee a valid
+/// Uses the specified model with `prompt_typed` to guarantee a valid
 /// `AnalysisOutput` JSON response. On 401 auth errors, refreshes the
 /// OAuth token and retries once.
-pub async fn analyze_observations(prompt: &str) -> Result<AnalysisOutput, String> {
-    match try_analyze(prompt).await {
+pub async fn analyze_observations(prompt: &str, model: &str) -> Result<AnalysisOutput, String> {
+    match try_analyze(prompt, model).await {
         Ok(result) => Ok(result),
         Err(e) if is_auth_error(&e) => {
             log::info!("Auth error, refreshing token and retrying");
             config::refresh_access_token().await?;
-            try_analyze(prompt).await
+            try_analyze(prompt, model).await
         }
         Err(e) => Err(e),
     }
 }
 
-async fn try_analyze(prompt: &str) -> Result<AnalysisOutput, String> {
+async fn try_analyze(prompt: &str, model: &str) -> Result<AnalysisOutput, String> {
     let token = config::read_access_token()?;
 
     let client = anthropic::Client::new(&token)
         .map_err(|e| format!("Failed to build Anthropic client: {e}"))?;
 
     let agent = client
-        .agent(MODEL)
+        .agent(model)
         .preamble(
             "You are a behavioral pattern analyzer for Claude Code tool-use observations. \
              Respond with structured JSON matching the provided schema.",
