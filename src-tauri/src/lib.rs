@@ -1,3 +1,5 @@
+#[allow(dead_code)] // Used by learning.rs in upcoming tasks
+mod ai_client;
 mod auth;
 mod config;
 mod fetcher;

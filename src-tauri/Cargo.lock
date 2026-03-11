@@ -614,7 +614,7 @@ dependencies = [
  "reqwest",
  "rig-core",
  "rusqlite",
- "schemars 0.8.22",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "subtle",
