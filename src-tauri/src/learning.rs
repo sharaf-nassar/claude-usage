@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use crate::models::{LearningLogEvent, LearningRunPayload};
+use crate::prompt_utils::{compress_observation, sanitize_for_prompt};
 use crate::storage::Storage;
 use tauri::Emitter;
 
@@ -13,84 +14,6 @@ pub fn is_safe_rule_name(name: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !name.starts_with('-')
-}
-
-/// Sanitize observation text for safe embedding in an LLM prompt.
-/// Strips characters that could be used for prompt injection.
-fn sanitize_for_prompt(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '[' | ']' | '{' | '}' | '`' => ' ',
-            '\n' | '\r' => ' ',
-            _ => c,
-        })
-        .collect()
-}
-
-/// Truncate a string at a valid UTF-8 char boundary.
-fn safe_truncate(s: &str, max_bytes: usize) -> &str {
-    if max_bytes >= s.len() {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-/// Smart observation compression: extracts key signals instead of naive truncation.
-/// Prioritizes: error messages > file paths > tool outcomes > general content.
-fn compress_observation(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
-        return sanitize_for_prompt(text);
-    }
-
-    let mut signals: Vec<&str> = Vec::new();
-    let mut remaining_budget = max_len;
-
-    // Extract error lines (highest priority)
-    for line in text.lines() {
-        let lower = line.to_lowercase();
-        if lower.contains("error") || lower.contains("failed") || lower.contains("panic") {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && trimmed.len() <= remaining_budget {
-                signals.push(trimmed);
-                remaining_budget = remaining_budget.saturating_sub(trimmed.len() + 2);
-            }
-        }
-    }
-
-    // Extract file paths (second priority)
-    for line in text.lines() {
-        if remaining_budget < 20 {
-            break;
-        }
-        let trimmed = line.trim();
-        if (trimmed.contains('/') || trimmed.contains('\\'))
-            && (trimmed.ends_with(".rs")
-                || trimmed.ends_with(".ts")
-                || trimmed.ends_with(".tsx")
-                || trimmed.ends_with(".js")
-                || trimmed.ends_with(".py")
-                || trimmed.contains("file_path"))
-            && !signals.contains(&trimmed)
-            && trimmed.len() <= remaining_budget
-        {
-            signals.push(trimmed);
-            remaining_budget = remaining_budget.saturating_sub(trimmed.len() + 2);
-        }
-    }
-
-    // Fill remainder with truncated content (UTF-8 safe)
-    if remaining_budget > 50 {
-        let truncated = safe_truncate(text, remaining_budget);
-        let result = format!("{} ... {}", signals.join(" | "), truncated);
-        return sanitize_for_prompt(safe_truncate(&result, max_len));
-    }
-
-    let joined = signals.join(" | ");
-    sanitize_for_prompt(safe_truncate(&joined, max_len))
 }
 
 /// Spawns a background analysis using the Anthropic API.
@@ -357,7 +280,78 @@ pub async fn spawn_analysis(
         String::new()
     };
 
-    let prompt = format!(
+    // Gather memory files for this project (if we can determine project)
+    let memory_context = {
+        let mut ctx = String::new();
+        // Determine project path from most common cwd in observations
+        if let Some(project_cwd) = observations
+            .iter()
+            .filter_map(|obs| obs.get("cwd").and_then(|v| v.as_str()))
+            .next()
+        {
+            let mem_dir = crate::memory_optimizer::memory_dir(project_cwd);
+            if mem_dir.exists()
+                && let Ok(entries) = std::fs::read_dir(&mem_dir)
+            {
+                let mut budget = 40_000usize; // ~10K tokens
+                for entry in entries.flatten() {
+                    if budget == 0 {
+                        break;
+                    }
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                        continue;
+                    }
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                        let sanitized = crate::prompt_utils::sanitize_for_prompt(&content);
+                        let truncated = crate::prompt_utils::safe_truncate(&sanitized, budget);
+                        ctx.push_str(&format!("- {name}: {truncated}\n"));
+                        budget = budget.saturating_sub(truncated.len() + name.len() + 4);
+                    }
+                }
+            }
+        }
+        ctx
+    };
+
+    // Gather CLAUDE.md context
+    let claude_md_context = {
+        let mut ctx = String::new();
+        if let Some(project_cwd) = observations
+            .iter()
+            .filter_map(|obs| obs.get("cwd").and_then(|v| v.as_str()))
+            .next()
+        {
+            let mut budget = 40_000usize; // ~10K tokens
+            // Project-local CLAUDE.md
+            let project_claude_md = std::path::PathBuf::from(project_cwd).join("CLAUDE.md");
+            if project_claude_md.exists()
+                && let Ok(content) = std::fs::read_to_string(&project_claude_md)
+            {
+                let sanitized = crate::prompt_utils::sanitize_for_prompt(&content);
+                let truncated = crate::prompt_utils::safe_truncate(&sanitized, budget);
+                ctx.push_str(&format!("- Project CLAUDE.md: {truncated}\n"));
+                budget = budget.saturating_sub(truncated.len() + 20);
+            }
+            // Global CLAUDE.md
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let global_claude_md = std::path::PathBuf::from(&home)
+                .join(".claude")
+                .join("CLAUDE.md");
+            if global_claude_md.exists()
+                && budget > 100
+                && let Ok(content) = std::fs::read_to_string(&global_claude_md)
+            {
+                let sanitized = crate::prompt_utils::sanitize_for_prompt(&content);
+                let truncated = crate::prompt_utils::safe_truncate(&sanitized, budget);
+                ctx.push_str(&format!("- Global CLAUDE.md: {truncated}\n"));
+            }
+        }
+        ctx
+    };
+
+    let mut prompt = format!(
         "Analyze these Claude Code usage patterns and:\n\
          \n\
          PART 1: Identify 0-{max_rules} NEW behavioral or workflow patterns that should become persistent rules.\n\
@@ -385,6 +379,29 @@ pub async fn spawn_analysis(
          For verdicts, strength indicates how strongly the data supports or contradicts the rule.\n\
          If no new patterns and no relevant verdicts, output: {{\"new_rules\": [], \"verdicts\": []}}"
     );
+
+    // Append memory and CLAUDE.md context to prompt
+    if !memory_context.is_empty() {
+        prompt.push_str(
+            "\n## Existing Project Memories (DO NOT create rules that duplicate these)\n\n",
+        );
+        prompt.push_str("The following project memories already exist. Do not create rules that duplicate this knowledge. ");
+        prompt.push_str("If you notice a pattern that's already covered by a memory, skip it.\n\n");
+        prompt.push_str(&memory_context);
+        prompt.push('\n');
+    }
+
+    if !claude_md_context.is_empty() {
+        prompt.push_str(
+            "\n## Existing CLAUDE.md Instructions (DO NOT create rules that duplicate these)\n\n",
+        );
+        prompt.push_str("The following CLAUDE.md instructions already exist. Do not create rules that duplicate these directives. ");
+        prompt.push_str(
+            "If you notice a pattern that's already covered by a CLAUDE.md directive, skip it.\n\n",
+        );
+        prompt.push_str(&claude_md_context);
+        prompt.push('\n');
+    }
 
     run_log!("Prompt size: {} chars", prompt.len());
 

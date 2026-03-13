@@ -47,7 +47,7 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 - Semi-transparent dark theme with custom drag-to-move titlebar
 - Remembers window position and size across restarts
 - Auto-refreshes usage every 60 seconds
-- Automatically refreshes expired OAuth tokens
+- Read-only OAuth — reads Claude Code's token, never refreshes it
 
 ## Screenshots
 
@@ -342,8 +342,8 @@ src-tauri/                    # Rust backend
     lib.rs                    # IPC commands, tray icon, updater, server startup
     ai_client.rs              # Rig Anthropic integration for learning analysis
     auth.rs                   # OAuth token management
-    config.rs                 # Credential loading and token refresh
-    fetcher.rs                # Usage API calls with retry logic
+    config.rs                 # Credential loading (read-only)
+    fetcher.rs                # Usage API calls
     learning.rs               # Learning analysis spawner
     models.rs                 # Data models (usage buckets + token + learning types)
     sessions.rs               # Tantivy full-text session search and indexing

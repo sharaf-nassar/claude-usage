@@ -1,4 +1,4 @@
-use crate::config::{claude_user_agent, http_client, read_access_token, refresh_access_token};
+use crate::config::{claude_user_agent, http_client, read_access_token};
 use crate::models::{UsageBucket, UsageData};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -111,37 +111,10 @@ pub async fn fetch_usage() -> UsageData {
         }
     };
 
-    // On 401, try refreshing the token and retry once
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-        match refresh_access_token().await {
-            Ok(new_token) => match do_fetch(&new_token).await {
-                Ok(r) => {
-                    if !r.status().is_success() {
-                        return UsageData {
-                            buckets: vec![],
-                            error: Some(format!("API error: {}", r.status())),
-                        };
-                    }
-                    match r.json::<serde_json::Value>().await {
-                        Ok(data) => UsageData {
-                            buckets: parse_buckets(&data),
-                            error: None,
-                        },
-                        Err(e) => UsageData {
-                            buckets: vec![],
-                            error: Some(format!("Parse error: {e}")),
-                        },
-                    }
-                }
-                Err(e) => UsageData {
-                    buckets: vec![],
-                    error: Some(format!("Retry failed: {e}")),
-                },
-            },
-            Err(e) => UsageData {
-                buckets: vec![],
-                error: Some(format!("Token refresh failed: {e}")),
-            },
+        UsageData {
+            buckets: vec![],
+            error: Some("Token expired or revoked. Please run: claude /login".into()),
         }
     } else if !resp.status().is_success() {
         UsageData {

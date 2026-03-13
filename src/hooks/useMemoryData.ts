@@ -1,0 +1,310 @@
+import { useState, useCallback, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { useToast } from "./useToast";
+
+export interface MemoryFile {
+  id: number;
+  project_path: string;
+  file_path: string;
+  file_name: string;
+  content_hash: string;
+  last_scanned_at: string;
+  memory_type: string | null;
+  description: string | null;
+  content: string;
+  changed_since_last_run: boolean;
+}
+
+export interface OptimizationSuggestion {
+  id: number;
+  run_id: number;
+  project_path: string;
+  action_type: string;
+  target_file: string | null;
+  reasoning: string;
+  proposed_content: string | null;
+  merge_sources: string[] | null;
+  status: string;
+  error: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface OptimizationRun {
+  id: number;
+  project_path: string;
+  trigger: string;
+  memories_scanned: number;
+  suggestions_created: number;
+  status: string;
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface KnownProject {
+  path: string;
+  name: string;
+  has_memories: boolean;
+  memory_count: number;
+  is_custom: boolean;
+}
+
+export function useMemoryData() {
+  const { toast } = useToast();
+  const [projects, setProjects] = useState<KnownProject[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string>("");
+  const selectedProjectRef = useRef(selectedProject);
+  selectedProjectRef.current = selectedProject;
+  const [memoryFiles, setMemoryFiles] = useState<MemoryFile[]>([]);
+  const [suggestions, setSuggestions] = useState<OptimizationSuggestion[]>([]);
+  const [runs, setRuns] = useState<OptimizationRun[]>([]);
+  const [optimizing, setOptimizing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const p = await invoke<KnownProject[]>("get_known_projects");
+      setProjects(p);
+      if (!selectedProjectRef.current && p.length > 0) {
+        setSelectedProject(p[0].path);
+      }
+    } catch (e) {
+      toast("error", `Failed to load projects: ${e}`);
+    }
+  }, [toast]);
+
+  const loadProjectData = useCallback(async (projectPath: string) => {
+    if (!projectPath) return;
+    setLoading(true);
+    try {
+      const [files, sugs, r] = await Promise.all([
+        invoke<MemoryFile[]>("get_memory_files", { projectPath }),
+        invoke<OptimizationSuggestion[]>("get_optimization_suggestions", {
+          projectPath,
+          runId: null,
+        }),
+        invoke<OptimizationRun[]>("get_optimization_runs", {
+          projectPath,
+          limit: 10,
+        }),
+      ]);
+      setMemoryFiles(files);
+      setSuggestions(sugs);
+      setRuns(r);
+      // Check if there's a running optimization
+      setOptimizing(r.some((run) => run.status === "running"));
+    } catch (e) {
+      toast("error", `Failed to load project data: ${e}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  const refresh = useCallback(() => {
+    if (selectedProject) {
+      loadProjectData(selectedProject);
+    }
+  }, [selectedProject, loadProjectData]);
+
+  // Load projects on mount
+  useEffect(() => {
+    loadProjects();
+  }, [loadProjects]);
+
+  // Load project data when selection changes
+  useEffect(() => {
+    if (selectedProject) {
+      loadProjectData(selectedProject);
+    }
+  }, [selectedProject, loadProjectData]);
+
+  // Listen for events
+  useEffect(() => {
+    const unlistenUpdated = listen<{ run_id: number; status: string }>(
+      "memory-optimizer-updated",
+      (event) => {
+        const { status } = event.payload;
+        setOptimizing(status === "running");
+        if (status !== "running") {
+          refresh();
+          setLogs([]);
+        }
+      },
+    );
+
+    const unlistenLog = listen<{ message: string }>(
+      "memory-optimizer-log",
+      (event) => {
+        setLogs((prev) => [...prev, event.payload.message]);
+      },
+    );
+
+    const unlistenFiles = listen<{ project_path: string }>(
+      "memory-files-updated",
+      () => {
+        refresh();
+      },
+    );
+
+    return () => {
+      unlistenUpdated.then((fn) => fn());
+      unlistenLog.then((fn) => fn());
+      unlistenFiles.then((fn) => fn());
+    };
+  }, [refresh]);
+
+  const triggerOptimization = useCallback(async () => {
+    if (!selectedProject || optimizing) return;
+    setOptimizing(true);
+    setLogs([]);
+    try {
+      await invoke("trigger_memory_optimization", {
+        projectPath: selectedProject,
+      });
+    } catch (e) {
+      toast("warning", String(e));
+      setOptimizing(false);
+    }
+  }, [selectedProject, optimizing, toast]);
+
+  const approveSuggestion = useCallback(
+    async (id: number) => {
+      try {
+        await invoke("approve_suggestion", { suggestionId: id });
+        refresh();
+      } catch (e) {
+        toast("error", `Failed to approve: ${e}`);
+      }
+    },
+    [refresh, toast],
+  );
+
+  const denySuggestion = useCallback(
+    async (id: number) => {
+      try {
+        await invoke("deny_suggestion", { suggestionId: id });
+        refresh();
+      } catch (e) {
+        toast("error", `Failed to deny: ${e}`);
+      }
+    },
+    [refresh, toast],
+  );
+
+  const undenySuggestion = useCallback(
+    async (id: number) => {
+      try {
+        await invoke("undeny_suggestion", { suggestionId: id });
+        refresh();
+      } catch (e) {
+        toast("error", `Failed to undeny: ${e}`);
+      }
+    },
+    [refresh, toast],
+  );
+
+  const addCustomProject = useCallback(
+    async (path: string) => {
+      try {
+        await invoke("add_custom_project", { path });
+        await loadProjects();
+      } catch (e) {
+        toast("error", `Failed to add project: ${e}`);
+      }
+    },
+    [loadProjects, toast],
+  );
+
+  const removeCustomProject = useCallback(
+    async (path: string) => {
+      try {
+        await invoke("remove_custom_project", { path });
+        await loadProjects();
+      } catch (e) {
+        toast("error", `Failed to remove project: ${e}`);
+      }
+    },
+    [loadProjects, toast],
+  );
+
+  const deleteMemoryFile = useCallback(
+    async (filePath: string) => {
+      const proj = selectedProjectRef.current;
+      if (!proj) return;
+      try {
+        await invoke("delete_memory_file", {
+          projectPath: proj,
+          filePath,
+        });
+        await Promise.all([loadProjects(), loadProjectData(proj)]);
+      } catch (e) {
+        toast("error", `Failed to delete memory: ${e}`);
+      }
+    },
+    [loadProjects, loadProjectData, toast],
+  );
+
+  const deleteProjectMemories = useCallback(
+    async (projectPath: string) => {
+      try {
+        const count = await invoke<number>("delete_project_memories", {
+          projectPath,
+        });
+        toast("info", `Deleted ${count} memory file(s)`);
+        await Promise.all([loadProjects(), loadProjectData(projectPath)]);
+      } catch (e) {
+        toast("error", `Failed to delete memories: ${e}`);
+      }
+    },
+    [loadProjects, loadProjectData, toast],
+  );
+
+  const triggerOptimizeAll = useCallback(
+    async () => {
+      if (optimizing) return;
+      const withMemories = projects.filter((p) => p.has_memories);
+      if (withMemories.length === 0) {
+        toast("info", "No projects with memories to optimize");
+        return;
+      }
+      setOptimizing(true);
+      setLogs([]);
+      try {
+        for (const p of withMemories) {
+          await invoke("trigger_memory_optimization", {
+            projectPath: p.path,
+          });
+        }
+      } catch (e) {
+        toast("warning", String(e));
+        setOptimizing(false);
+      }
+    },
+    [projects, optimizing, toast],
+  );
+
+  return {
+    projects,
+    selectedProject,
+    setSelectedProject,
+    memoryFiles,
+    suggestions,
+    runs,
+    optimizing,
+    loading,
+    logs,
+    triggerOptimization,
+    approveSuggestion,
+    denySuggestion,
+    undenySuggestion,
+    addCustomProject,
+    removeCustomProject,
+    deleteMemoryFile,
+    deleteProjectMemories,
+    triggerOptimizeAll,
+    refresh,
+  };
+}

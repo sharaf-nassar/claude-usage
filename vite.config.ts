@@ -11,6 +11,11 @@ export default defineConfig({
   server: {
     port: 8181,
     strictPort: true,
+    hmr: {
+      protocol: "ws",
+      host: "localhost",
+      port: 8181,
+    },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

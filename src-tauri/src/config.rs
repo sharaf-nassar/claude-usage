@@ -1,16 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use tokio::sync::Mutex;
-
-const OAUTH_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
-// Public OAuth client ID for the native desktop flow (not a secret).
-const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-static REFRESH_LOCK: Mutex<()> = Mutex::const_new(());
 static CLAUDE_VERSION: OnceLock<String> = OnceLock::new();
 static SHELL_PATH: OnceLock<String> = OnceLock::new();
 
@@ -82,35 +74,6 @@ fn read_credentials() -> Result<serde_json::Value, String> {
     serde_json::from_str(&contents).map_err(|e| format!("Failed to parse credentials: {e}"))
 }
 
-/// Write credentials JSON back to file (used on Linux; skipped on macOS where
-/// Claude Code owns the Keychain entry).
-#[cfg(not(target_os = "macos"))]
-fn write_credentials_file(data: &serde_json::Value) -> Result<(), String> {
-    let path = credentials_path().ok_or("Cannot determine home directory")?;
-    let json = serde_json::to_string_pretty(data)
-        .map_err(|e| format!("Failed to serialize credentials: {e}"))?;
-
-    let tmp_path = path.with_extension("json.tmp");
-    let mut tmp =
-        fs::File::create(&tmp_path).map_err(|e| format!("Failed to create temp file: {e}"))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tmp.set_permissions(fs::Permissions::from_mode(0o600));
-    }
-
-    use std::io::Write;
-    tmp.write_all(json.as_bytes())
-        .map_err(|e| format!("Failed to write temp file: {e}"))?;
-    tmp.sync_all()
-        .map_err(|e| format!("Failed to sync temp file: {e}"))?;
-    drop(tmp);
-
-    fs::rename(&tmp_path, &path).map_err(|e| format!("Failed to rename credentials file: {e}"))?;
-    Ok(())
-}
-
 // -- macOS Keychain helpers --------------------------------------------------
 
 #[cfg(target_os = "macos")]
@@ -173,67 +136,4 @@ pub fn read_access_token() -> Result<String, String> {
         .as_str()
         .map(String::from)
         .ok_or_else(|| "No access token found in credentials".into())
-}
-
-pub async fn refresh_access_token() -> Result<String, String> {
-    let _guard = REFRESH_LOCK.lock().await;
-    let mut data = read_credentials()?;
-
-    let refresh_token = data["claudeAiOauth"]["refreshToken"]
-        .as_str()
-        .ok_or("No refresh token found")?
-        .to_string();
-
-    let resp = http_client()
-        .post(OAUTH_TOKEN_URL)
-        .json(&serde_json::json!({
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": OAUTH_CLIENT_ID,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Token refresh request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!(
-            "Token refresh failed with status: {}",
-            resp.status()
-        ));
-    }
-
-    let tokens: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse refresh response: {e}"))?;
-
-    let new_access = tokens["access_token"]
-        .as_str()
-        .ok_or("No access_token in refresh response")?
-        .to_string();
-
-    // Update in-memory credentials
-    if let Some(new_refresh) = tokens["refresh_token"].as_str() {
-        data["claudeAiOauth"]["refreshToken"] = serde_json::Value::String(new_refresh.into());
-    }
-    data["claudeAiOauth"]["accessToken"] = serde_json::Value::String(new_access.clone());
-
-    let expires_in = tokens["expires_in"].as_u64().unwrap_or(86400);
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    data["claudeAiOauth"]["expiresAt"] =
-        serde_json::Value::Number((now_ms + expires_in * 1000).into());
-
-    // Persist to file on Linux/Windows. On macOS we intentionally skip writing
-    // because Claude Code itself owns the Keychain entry and will update it on
-    // its next launch. The refreshed token stays valid in-memory for this session;
-    // on next cold start the app will re-read from Keychain and refresh again if
-    // the stored token is expired. This avoids fighting with Claude Code over the
-    // Keychain entry.
-    #[cfg(not(target_os = "macos"))]
-    write_credentials_file(&data)?;
-
-    Ok(new_access)
 }

@@ -4,9 +4,11 @@ mod auth;
 mod config;
 mod fetcher;
 mod learning;
+mod memory_optimizer;
 mod models;
+mod prompt_utils;
 mod server;
-mod sessions;
+pub(crate) mod sessions;
 mod storage;
 
 use models::{
@@ -317,6 +319,145 @@ async fn get_observation_sparkline() -> Result<Vec<i64>, String> {
 #[tauri::command]
 async fn read_rule_content(file_path: String) -> Result<String, String> {
     std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read rule file: {e}"))
+}
+
+// --- Memory optimizer commands ---
+
+#[tauri::command]
+async fn get_memory_files(project_path: String) -> Result<Vec<crate::models::MemoryFile>, String> {
+    let storage = get_storage()?;
+    run_blocking(move || memory_optimizer::scan_memory_files(storage, &project_path))
+}
+
+#[tauri::command]
+async fn trigger_memory_optimization(
+    project_path: String,
+    app: tauri::AppHandle,
+) -> Result<i64, String> {
+    let storage = get_storage()?;
+    // Create the run record synchronously so we can return the real run_id
+    let run_id = storage.create_optimization_run(&project_path, "manual")?;
+    let project = project_path.clone();
+    tauri::async_runtime::spawn(async move {
+        match memory_optimizer::run_optimization_with_run(storage, &project, run_id, &app).await {
+            Ok(_) => log::info!("Memory optimization completed: run {run_id}"),
+            Err(e) => log::error!("Memory optimization failed: {e}"),
+        }
+    });
+    Ok(run_id)
+}
+
+#[tauri::command]
+async fn get_optimization_suggestions(
+    project_path: String,
+    run_id: Option<i64>,
+) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
+    let storage = get_storage()?;
+    run_blocking(move || storage.get_optimization_suggestions(&project_path, run_id))
+}
+
+#[tauri::command]
+async fn approve_suggestion(suggestion_id: i64, app: tauri::AppHandle) -> Result<(), String> {
+    let storage = get_storage()?;
+    run_blocking(move || memory_optimizer::execute_suggestion(storage, suggestion_id, &app))
+}
+
+#[tauri::command]
+async fn deny_suggestion(suggestion_id: i64) -> Result<(), String> {
+    let storage = get_storage()?;
+    run_blocking(move || storage.update_suggestion_status(suggestion_id, "denied", None))
+}
+
+#[tauri::command]
+async fn undeny_suggestion(suggestion_id: i64) -> Result<(), String> {
+    let storage = get_storage()?;
+    run_blocking(move || storage.delete_suggestion(suggestion_id))
+}
+
+#[tauri::command]
+async fn get_optimization_runs(
+    project_path: String,
+    limit: i32,
+) -> Result<Vec<crate::models::OptimizationRun>, String> {
+    let storage = get_storage()?;
+    run_blocking(move || storage.get_optimization_runs(&project_path, limit as i64))
+}
+
+#[tauri::command]
+async fn get_known_projects() -> Result<Vec<crate::models::KnownProject>, String> {
+    let storage = get_storage()?;
+    run_blocking(move || memory_optimizer::get_known_projects(storage))
+}
+
+#[tauri::command]
+async fn add_custom_project(path: String) -> Result<(), String> {
+    let storage = get_storage()?;
+    run_blocking(move || {
+        let current = storage.get_setting("memory_optimizer.custom_projects")?;
+        let mut paths: Vec<String> = current
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+        let json = serde_json::to_string(&paths).map_err(|e| format!("JSON error: {e}"))?;
+        storage.set_setting("memory_optimizer.custom_projects", &json)
+    })
+}
+
+#[tauri::command]
+async fn delete_memory_file(project_path: String, file_path: String) -> Result<(), String> {
+    run_blocking(move || {
+        let mem_dir = memory_optimizer::memory_dir(&project_path);
+        let target = std::path::PathBuf::from(&file_path);
+        // Path containment check
+        let canonical_dir = mem_dir.canonicalize().unwrap_or_else(|_| mem_dir.clone());
+        let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
+        if !canonical_target.starts_with(&canonical_dir) {
+            return Err("Cannot delete files outside memory directory".to_string());
+        }
+        if target.exists() {
+            std::fs::remove_file(&target)
+                .map_err(|e| format!("Failed to delete {}: {e}", target.display()))?;
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+async fn delete_project_memories(project_path: String) -> Result<i64, String> {
+    run_blocking(move || {
+        let mem_dir = memory_optimizer::memory_dir(&project_path);
+        if !mem_dir.exists() {
+            return Ok(0);
+        }
+        let mut count = 0i64;
+        let entries =
+            std::fs::read_dir(&mem_dir).map_err(|e| format!("Failed to read memory dir: {e}"))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    })
+}
+
+#[tauri::command]
+async fn remove_custom_project(path: String) -> Result<(), String> {
+    let storage = get_storage()?;
+    run_blocking(move || {
+        let current = storage.get_setting("memory_optimizer.custom_projects")?;
+        let mut paths: Vec<String> = current
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        paths.retain(|p| p != &path);
+        let json = serde_json::to_string(&paths).map_err(|e| format!("JSON error: {e}"))?;
+        storage.set_setting("memory_optimizer.custom_projects", &json)
+    })
 }
 
 #[tauri::command]
@@ -653,6 +794,18 @@ pub fn run() {
             get_top_tools,
             get_observation_sparkline,
             read_rule_content,
+            get_memory_files,
+            trigger_memory_optimization,
+            get_optimization_suggestions,
+            approve_suggestion,
+            deny_suggestion,
+            undeny_suggestion,
+            get_optimization_runs,
+            get_known_projects,
+            add_custom_project,
+            remove_custom_project,
+            delete_memory_file,
+            delete_project_memories,
             sessions::search_sessions,
             sessions::get_session_context,
             sessions::get_search_facets,

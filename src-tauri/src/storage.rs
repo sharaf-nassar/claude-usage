@@ -311,6 +311,56 @@ impl Storage {
                 .map_err(|e| format!("Failed to record migration 5: {e}"))?;
         }
 
+        // Migration 6: memory optimizer tables
+        if current_version < 6 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memory_files (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_path    TEXT NOT NULL,
+                    file_path       TEXT NOT NULL,
+                    content_hash    TEXT NOT NULL,
+                    last_scanned_at TEXT NOT NULL,
+                    UNIQUE(project_path, file_path)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memfiles_project ON memory_files(project_path);
+
+                CREATE TABLE IF NOT EXISTS optimization_runs (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_path        TEXT NOT NULL,
+                    trigger             TEXT NOT NULL,
+                    memories_scanned    INTEGER NOT NULL DEFAULT 0,
+                    suggestions_created INTEGER NOT NULL DEFAULT 0,
+                    context_sources     TEXT NOT NULL DEFAULT '{}',
+                    status              TEXT NOT NULL DEFAULT 'running',
+                    error               TEXT,
+                    started_at          TEXT NOT NULL,
+                    completed_at        TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_optrun_project_started ON optimization_runs(project_path, started_at);
+
+                CREATE TABLE IF NOT EXISTS optimization_suggestions (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id           INTEGER NOT NULL REFERENCES optimization_runs(id),
+                    project_path     TEXT NOT NULL,
+                    action_type      TEXT NOT NULL,
+                    target_file      TEXT,
+                    reasoning        TEXT NOT NULL,
+                    proposed_content TEXT,
+                    merge_sources    TEXT,
+                    status           TEXT NOT NULL DEFAULT 'pending',
+                    error            TEXT,
+                    resolved_at      TEXT,
+                    created_at       TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_optsug_run ON optimization_suggestions(run_id);
+                CREATE INDEX IF NOT EXISTS idx_optsug_project_status ON optimization_suggestions(project_path, status);",
+            )
+            .map_err(|e| format!("Migration 6 (memory optimizer tables) error: {e}"))?;
+
+            conn.execute("INSERT INTO schema_version (version) VALUES (6)", [])
+                .map_err(|e| format!("Failed to record migration 6: {e}"))?;
+        }
+
         let storage = Self {
             conn: Mutex::new(conn),
         };
@@ -1846,6 +1896,330 @@ impl Storage {
 
         tx.commit()
             .map_err(|e| format!("Commit tool_actions: {e}"))?;
+        Ok(())
+    }
+
+    // --- Memory optimizer storage methods ---
+
+    /// Create a new optimization run record. Returns the run ID.
+    #[allow(dead_code)]
+    pub fn create_optimization_run(
+        &self,
+        project_path: &str,
+        trigger: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock();
+        // Concurrency guard: only one running per project
+        let running: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM optimization_runs WHERE project_path = ?1 AND status = 'running'",
+                rusqlite::params![project_path],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to check running optimizations: {e}"))?;
+        if running > 0 {
+            return Err(format!(
+                "An optimization is already running for {project_path}"
+            ));
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO optimization_runs (project_path, trigger, memories_scanned, suggestions_created, context_sources, status, started_at)
+             VALUES (?1, ?2, 0, 0, '{}', 'running', ?3)",
+            rusqlite::params![project_path, trigger, now],
+        )
+        .map_err(|e| format!("Failed to create optimization run: {e}"))?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Update an optimization run with results.
+    #[allow(dead_code)]
+    pub fn update_optimization_run(
+        &self,
+        run_id: i64,
+        memories_scanned: i64,
+        suggestions_created: i64,
+        context_sources: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE optimization_runs SET memories_scanned = ?1, suggestions_created = ?2,
+             context_sources = ?3, status = ?4, error = ?5, completed_at = ?6 WHERE id = ?7",
+            rusqlite::params![
+                memories_scanned,
+                suggestions_created,
+                context_sources,
+                status,
+                error,
+                now,
+                run_id
+            ],
+        )
+        .map_err(|e| format!("Failed to update optimization run: {e}"))?;
+        Ok(())
+    }
+
+    /// Get optimization runs for a project.
+    #[allow(dead_code)]
+    pub fn get_optimization_runs(
+        &self,
+        project_path: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::models::OptimizationRun>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, project_path, trigger, memories_scanned, suggestions_created,
+                        status, error, started_at, completed_at
+                 FROM optimization_runs WHERE project_path = ?1
+                 ORDER BY started_at DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("Failed to prepare optimization runs query: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![project_path, limit], |row| {
+                Ok(crate::models::OptimizationRun {
+                    id: row.get(0)?,
+                    project_path: row.get(1)?,
+                    trigger: row.get(2)?,
+                    memories_scanned: row.get(3)?,
+                    suggestions_created: row.get(4)?,
+                    status: row.get(5)?,
+                    error: row.get(6)?,
+                    started_at: row.get(7)?,
+                    completed_at: row.get(8)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query optimization runs: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect optimization runs: {e}"))
+    }
+
+    /// Store an optimization suggestion.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn store_optimization_suggestion(
+        &self,
+        run_id: i64,
+        project_path: &str,
+        action_type: &str,
+        target_file: Option<&str>,
+        reasoning: &str,
+        proposed_content: Option<&str>,
+        merge_sources: Option<&str>,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO optimization_suggestions
+             (run_id, project_path, action_type, target_file, reasoning, proposed_content, merge_sources, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8)",
+            rusqlite::params![run_id, project_path, action_type, target_file, reasoning, proposed_content, merge_sources, now],
+        )
+        .map_err(|e| format!("Failed to store optimization suggestion: {e}"))?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Get optimization suggestions for a project, optionally filtered by run.
+    #[allow(dead_code)]
+    pub fn get_optimization_suggestions(
+        &self,
+        project_path: &str,
+        run_id: Option<i64>,
+    ) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
+        let conn = self.conn.lock();
+        let query = if run_id.is_some() {
+            "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                    proposed_content, merge_sources, status, error, resolved_at, created_at
+             FROM optimization_suggestions WHERE project_path = ?1 AND run_id = ?2
+             ORDER BY created_at ASC"
+        } else {
+            "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                    proposed_content, merge_sources, status, error, resolved_at, created_at
+             FROM optimization_suggestions WHERE project_path = ?1
+             ORDER BY created_at DESC"
+        };
+        let mut stmt = conn
+            .prepare_cached(query)
+            .map_err(|e| format!("Failed to prepare suggestions query: {e}"))?;
+
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some(rid) = run_id {
+            vec![Box::new(project_path.to_string()), Box::new(rid)]
+        } else {
+            vec![Box::new(project_path.to_string())]
+        };
+
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                let merge_sources_json: Option<String> = row.get(7)?;
+                let merge_sources: Option<Vec<String>> =
+                    merge_sources_json.and_then(|j| serde_json::from_str(&j).ok());
+                Ok(crate::models::OptimizationSuggestion {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    project_path: row.get(2)?,
+                    action_type: row.get(3)?,
+                    target_file: row.get(4)?,
+                    reasoning: row.get(5)?,
+                    proposed_content: row.get(6)?,
+                    merge_sources,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    resolved_at: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query suggestions: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect suggestions: {e}"))
+    }
+
+    /// Get denied suggestions for a project (for denial context in optimizer prompt).
+    #[allow(dead_code)]
+    pub fn get_denied_suggestions(
+        &self,
+        project_path: &str,
+        limit: i64,
+    ) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                        proposed_content, merge_sources, status, error, resolved_at, created_at
+                 FROM optimization_suggestions
+                 WHERE project_path = ?1 AND status = 'denied'
+                 ORDER BY resolved_at DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("Failed to prepare denied suggestions query: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![project_path, limit], |row| {
+                let merge_sources_json: Option<String> = row.get(7)?;
+                let merge_sources: Option<Vec<String>> =
+                    merge_sources_json.and_then(|j| serde_json::from_str(&j).ok());
+                Ok(crate::models::OptimizationSuggestion {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    project_path: row.get(2)?,
+                    action_type: row.get(3)?,
+                    target_file: row.get(4)?,
+                    reasoning: row.get(5)?,
+                    proposed_content: row.get(6)?,
+                    merge_sources,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    resolved_at: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query denied suggestions: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect denied suggestions: {e}"))
+    }
+
+    /// Update a suggestion status (approve/deny).
+    #[allow(dead_code)]
+    pub fn update_suggestion_status(
+        &self,
+        suggestion_id: i64,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE optimization_suggestions SET status = ?1, error = ?2, resolved_at = ?3 WHERE id = ?4",
+            rusqlite::params![status, error, now, suggestion_id],
+        )
+        .map_err(|e| format!("Failed to update suggestion status: {e}"))?;
+        Ok(())
+    }
+
+    /// Get a single suggestion by ID.
+    #[allow(dead_code)]
+    pub fn get_suggestion_by_id(
+        &self,
+        suggestion_id: i64,
+    ) -> Result<crate::models::OptimizationSuggestion, String> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                    proposed_content, merge_sources, status, error, resolved_at, created_at
+             FROM optimization_suggestions WHERE id = ?1",
+            rusqlite::params![suggestion_id],
+            |row| {
+                let merge_sources_json: Option<String> = row.get(7)?;
+                let merge_sources: Option<Vec<String>> =
+                    merge_sources_json.and_then(|j| serde_json::from_str(&j).ok());
+                Ok(crate::models::OptimizationSuggestion {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    project_path: row.get(2)?,
+                    action_type: row.get(3)?,
+                    target_file: row.get(4)?,
+                    reasoning: row.get(5)?,
+                    proposed_content: row.get(6)?,
+                    merge_sources,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    resolved_at: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Suggestion not found: {e}"))
+    }
+
+    /// Upsert a memory file record (scan tracking).
+    #[allow(dead_code)]
+    pub fn upsert_memory_file(
+        &self,
+        project_path: &str,
+        file_path: &str,
+        content_hash: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_files (project_path, file_path, content_hash, last_scanned_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(project_path, file_path) DO UPDATE SET content_hash = ?3, last_scanned_at = ?4",
+            rusqlite::params![project_path, file_path, content_hash, now],
+        )
+        .map_err(|e| format!("Failed to upsert memory file: {e}"))?;
+        Ok(())
+    }
+
+    /// Get previously recorded memory file hashes for change detection.
+    #[allow(dead_code)]
+    pub fn get_memory_file_hashes(
+        &self,
+        project_path: &str,
+    ) -> Result<std::collections::HashMap<String, String>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT file_path, content_hash FROM memory_files WHERE project_path = ?1",
+            )
+            .map_err(|e| format!("Failed to prepare memory files query: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![project_path], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("Failed to query memory files: {e}"))?;
+        rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
+            .map_err(|e| format!("Failed to collect memory file hashes: {e}"))
+    }
+
+    /// Delete suggestion (for undeny — removes from DB so it's no longer in denial blocklist).
+    #[allow(dead_code)]
+    pub fn delete_suggestion(&self, suggestion_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM optimization_suggestions WHERE id = ?1",
+            rusqlite::params![suggestion_id],
+        )
+        .map_err(|e| format!("Failed to delete suggestion: {e}"))?;
         Ok(())
     }
 }

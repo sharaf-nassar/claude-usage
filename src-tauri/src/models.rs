@@ -312,3 +312,131 @@ pub struct LearningLogEvent {
     pub run_id: i64,
     pub message: String,
 }
+
+// --- Memory optimizer models ---
+
+/// Action types for memory optimization suggestions
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize, Clone, Debug, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionType {
+    Delete,
+    Update,
+    Merge,
+    Create,
+    Flag,
+}
+
+impl std::fmt::Display for ActionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActionType::Delete => write!(f, "delete"),
+            ActionType::Update => write!(f, "update"),
+            ActionType::Merge => write!(f, "merge"),
+            ActionType::Create => write!(f, "create"),
+            ActionType::Flag => write!(f, "flag"),
+        }
+    }
+}
+
+/// LLM response: a single optimization suggestion
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize, Clone, Debug, schemars::JsonSchema)]
+pub struct OptimizationSuggestionLlm {
+    pub action_type: ActionType,
+    pub target_file: Option<String>,
+    pub new_filename: Option<String>,
+    pub reasoning: String,
+    pub proposed_content: Option<String>,
+    pub merge_sources: Option<Vec<String>>,
+}
+
+/// Top-level LLM analysis output for memory optimization
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize, Clone, Debug, schemars::JsonSchema)]
+pub struct OptimizationOutput {
+    #[serde(default)]
+    pub suggestions: Vec<OptimizationSuggestionLlm>,
+}
+
+/// A memory file record returned to frontend
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct MemoryFile {
+    pub id: i64,
+    pub project_path: String,
+    pub file_path: String,
+    pub file_name: String,
+    pub content_hash: String,
+    pub last_scanned_at: String,
+    pub memory_type: Option<String>,
+    pub description: Option<String>,
+    pub content: String,
+    pub changed_since_last_run: bool,
+}
+
+/// An optimization suggestion returned to frontend
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct OptimizationSuggestion {
+    pub id: i64,
+    pub run_id: i64,
+    pub project_path: String,
+    pub action_type: String,
+    pub target_file: Option<String>,
+    pub reasoning: String,
+    pub proposed_content: Option<String>,
+    pub merge_sources: Option<Vec<String>>,
+    pub status: String,
+    pub error: Option<String>,
+    pub resolved_at: Option<String>,
+    pub created_at: String,
+}
+
+/// An optimization run record returned to frontend
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct OptimizationRun {
+    pub id: i64,
+    pub project_path: String,
+    pub trigger: String,
+    pub memories_scanned: i64,
+    pub suggestions_created: i64,
+    pub status: String,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+}
+
+/// A known project for the memory optimizer
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct KnownProject {
+    pub path: String,
+    pub name: String,
+    pub has_memories: bool,
+    pub memory_count: i64,
+    pub is_custom: bool,
+}
+
+/// Event payload for memory optimizer log messages
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct MemoryOptimizerLogEvent {
+    pub message: String,
+}
+
+/// Event payload for memory optimizer status changes
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct MemoryOptimizerUpdatedEvent {
+    pub run_id: i64,
+    pub status: String,
+}
+
+/// Event payload for memory files changed
+#[allow(dead_code)]
+#[derive(Serialize, Clone, Debug)]
+pub struct MemoryFilesUpdatedEvent {
+    pub project_path: String,
+}

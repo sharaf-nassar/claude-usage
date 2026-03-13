@@ -1,6 +1,7 @@
 use rig::client::CompletionClient;
 use rig::completion::TypedPrompt;
 use rig::providers::anthropic;
+use serde::de::DeserializeOwned;
 
 use crate::config;
 use crate::models::AnalysisOutput;
@@ -11,21 +12,10 @@ pub const MODEL_SONNET: &str = "claude-sonnet-4-5-20250929";
 /// Analyze observations using the Anthropic API via Rig.
 ///
 /// Uses the specified model with `prompt_typed` to guarantee a valid
-/// `AnalysisOutput` JSON response. On 401 auth errors, refreshes the
-/// OAuth token and retries once.
+/// `AnalysisOutput` JSON response. Reads the current access token from
+/// Claude Code's credentials — never refreshes it (Claude Code owns the
+/// token lifecycle).
 pub async fn analyze_observations(prompt: &str, model: &str) -> Result<AnalysisOutput, String> {
-    match try_analyze(prompt, model).await {
-        Ok(result) => Ok(result),
-        Err(e) if is_auth_error(&e) => {
-            log::info!("Auth error, refreshing token and retrying");
-            config::refresh_access_token().await?;
-            try_analyze(prompt, model).await
-        }
-        Err(e) => Err(e),
-    }
-}
-
-async fn try_analyze(prompt: &str, model: &str) -> Result<AnalysisOutput, String> {
     let token = config::read_access_token()?;
 
     let client = anthropic::Client::new(&token)
@@ -48,9 +38,32 @@ async fn try_analyze(prompt: &str, model: &str) -> Result<AnalysisOutput, String
     Ok(result)
 }
 
-fn is_auth_error(error: &str) -> bool {
-    error.contains("401")
-        || error.contains("authentication_error")
-        || error.contains("Unauthorized")
-        || error.contains("invalid x-api-key")
+/// Generic typed analysis using the Anthropic API via Rig.
+/// Like `analyze_observations` but accepts any JsonSchema-compatible output type.
+pub async fn analyze_typed<T>(
+    prompt: &str,
+    preamble: &str,
+    model: &str,
+    max_tokens: u64,
+) -> Result<T, String>
+where
+    T: DeserializeOwned + schemars::JsonSchema + Send + Sync + 'static,
+{
+    let token = config::read_access_token()?;
+
+    let client = anthropic::Client::new(&token)
+        .map_err(|e| format!("Failed to build Anthropic client: {e}"))?;
+
+    let agent = client
+        .agent(model)
+        .preamble(preamble)
+        .max_tokens(max_tokens)
+        .build();
+
+    let result: T = agent
+        .prompt_typed(prompt)
+        .await
+        .map_err(|e| format!("Anthropic API error: {e}"))?;
+
+    Ok(result)
 }

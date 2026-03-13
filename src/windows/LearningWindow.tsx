@@ -5,6 +5,7 @@ import StatusStrip from "../components/learning/StatusStrip";
 import RuleCard from "../components/learning/RuleCard";
 import DomainBreakdown from "../components/learning/DomainBreakdown";
 import FloatingRunsWindow from "../components/learning/FloatingRunsWindow";
+import { MemoriesPanel } from "../components/learning/MemoriesPanel";
 import type { LearningSettings } from "../types";
 
 const TRIGGER_OPTIONS = [
@@ -122,6 +123,7 @@ function LearningPanel() {
     deleteRule,
   } = useLearningData();
 
+  const [activeTab, setActiveTab] = useState<"rules" | "memories">("rules");
   const [showRuns, setShowRuns] = useState(false);
   const handleCloseRuns = useCallback(() => setShowRuns(false), []);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -171,6 +173,22 @@ function LearningPanel() {
     <div className="learning-app">
       <div className="learning-toolbar">
         <span className="learning-toolbar-label">Learning</span>
+        <div style={{ display: "flex", gap: 2, marginLeft: 8 }}>
+          <button
+            className={`learning-cog-btn${activeTab === "rules" ? " learning-runs-btn--active" : ""}`}
+            style={{ fontSize: 10, fontWeight: activeTab === "rules" ? 700 : 400 }}
+            onClick={() => setActiveTab("rules")}
+          >
+            Rules
+          </button>
+          <button
+            className={`learning-cog-btn${activeTab === "memories" ? " learning-runs-btn--active" : ""}`}
+            style={{ fontSize: 10, fontWeight: activeTab === "memories" ? 700 : 400 }}
+            onClick={() => setActiveTab("memories")}
+          >
+            Memories
+          </button>
+        </div>
         <div className="learning-toolbar-right">
           {settings.trigger_mode !== "on-demand" && (
             <button
@@ -205,33 +223,39 @@ function LearningPanel() {
         </div>
       </div>
       <div className="learning-content" ref={contentRef}>
-        <StatusStrip
-          observationCount={observationCount}
-          unanalyzedCount={unanalyzedCount}
-          topTools={topTools}
-          sparkline={sparkline}
-          lastRun={runs[0]}
-          analyzing={analyzing}
-          onAnalyze={triggerAnalysis}
-        />
-        <div className="learning-section">
-          <div className="learning-section-header">
-            RULES
-            <span className="learning-section-count">{rules.length}</span>
-          </div>
-          {rules.length === 0 ? (
-            <div className="learning-empty">
-              No rules learned yet. Run an analysis to get started.
+        {activeTab === "rules" ? (
+          <>
+            <StatusStrip
+              observationCount={observationCount}
+              unanalyzedCount={unanalyzedCount}
+              topTools={topTools}
+              sparkline={sparkline}
+              lastRun={runs[0]}
+              analyzing={analyzing}
+              onAnalyze={triggerAnalysis}
+            />
+            <div className="learning-section">
+              <div className="learning-section-header">
+                RULES
+                <span className="learning-section-count">{rules.length}</span>
+              </div>
+              {rules.length === 0 ? (
+                <div className="learning-empty">
+                  No rules learned yet. Run an analysis to get started.
+                </div>
+              ) : (
+                <>
+                  {rules.map((rule) => (
+                    <RuleCard key={rule.name} rule={rule} onDelete={deleteRule} />
+                  ))}
+                  <DomainBreakdown rules={rules} />
+                </>
+              )}
             </div>
-          ) : (
-            <>
-              {rules.map((rule) => (
-                <RuleCard key={rule.name} rule={rule} onDelete={deleteRule} />
-              ))}
-              <DomainBreakdown rules={rules} />
-            </>
-          )}
-        </div>
+          </>
+        ) : (
+          <MemoriesPanel />
+        )}
       </div>
       {showRuns && (
         <FloatingRunsWindow onClose={handleCloseRuns} />
