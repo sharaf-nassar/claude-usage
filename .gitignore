@@ -18,3 +18,10 @@ Thumbs.db
 
 # Milvus data (unrelated)
 volumes/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/

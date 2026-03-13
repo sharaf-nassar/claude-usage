@@ -93,11 +93,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # Notarization handled separately below — Tauri's built-in apple-codesign
+          # polls indefinitely and loses network on GH Actions after ~2h
         with:
           tagName: v__VERSION__
           releaseName: 'Quill v__VERSION__'
@@ -105,6 +102,35 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Notarize macOS DMG
+        if: matrix.platform == 'macos-latest'
+        timeout-minutes: 35
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET=$(echo "${{ matrix.args }}" | sed 's/--target //')
+          DMG=$(find "src-tauri/target/${TARGET}/release/bundle/dmg" -name "*.dmg" 2>/dev/null | head -1)
+          if [ -z "$DMG" ]; then
+            echo "::error::No DMG found for target ${TARGET}"
+            exit 1
+          fi
+
+          echo "Notarizing $(basename "$DMG")..."
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 30m
+
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$DMG"
+
+          echo "Re-uploading notarized DMG to release..."
+          gh release upload "${{ github.ref_name }}" "$DMG" --clobber
 
   publish:
     needs: build

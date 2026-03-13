@@ -23,7 +23,7 @@ CONFIG_FILE="${CONFIG_DIR}/config.json"
 USAGE_URL=""
 HOSTNAME_LABEL=""
 SECRET=""
-SECRET_FILE="${HOME}/.local/share/io.quill.toolkit/auth_secret"
+SECRET_FILE="${HOME}/.local/share/com.quilltoolkit.app/auth_secret"
 
 while [[ $# -gt 0 ]]; do
     case $1 in

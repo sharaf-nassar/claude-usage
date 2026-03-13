@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RangeType, DataPoint, BucketStats, UsageBucket } from "../types";
 
+const REFRESH_INTERVAL_MS = 60_000; // Re-fetch every 60s to keep chart current
+
 const RANGES: Record<RangeType, { label: string; days: number }> = {
   "1h": { label: "1 Hour", days: 1 },
   "24h": { label: "24 Hours", days: 1 },
@@ -24,8 +26,13 @@ export function useAnalyticsData(
   bucketsRef.current = currentBuckets;
   const hasBuckets = !!(currentBuckets && currentBuckets.length > 0);
 
+  const initialLoadDone = useRef(false);
+
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    // Only show loading skeleton on initial fetch, not periodic refreshes
+    if (!initialLoadDone.current) {
+      setLoading(true);
+    }
     setError(null);
 
     try {
@@ -58,12 +65,19 @@ export function useAnalyticsData(
       setError(String(e));
     } finally {
       setLoading(false);
+      initialLoadDone.current = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- hasBuckets triggers re-fetch when buckets arrive (data read from ref)
   }, [bucket, range, hasBuckets]);
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Periodic refresh so the chart stays current even during idle periods
+  useEffect(() => {
+    const interval = setInterval(fetchData, REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, [fetchData]);
 
   return {

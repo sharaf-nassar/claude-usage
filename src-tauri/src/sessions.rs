@@ -27,6 +27,9 @@ pub struct SessionSchema {
     pub git_branch: Field,
     pub tools_used: Field,
     pub files_modified: Field,
+    pub code_changes: Field,
+    pub commands_run: Field,
+    pub tool_details: Field,
     #[allow(dead_code)]
     pub schema: Schema,
 }
@@ -55,10 +58,30 @@ pub struct SessionIndex {
 }
 
 impl SessionIndex {
+    const SCHEMA_VERSION: u32 = 3;
+
     /// Open an existing index or create a new one at the given directory.
     pub fn open_or_create(index_dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(index_dir)
             .map_err(|e| format!("Failed to create index dir: {e}"))?;
+
+        // Check schema version — rebuild index if schema changed
+        let version_path = index_dir.join("schema_version.txt");
+        let stored_version: u32 = std::fs::read_to_string(&version_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(1);
+
+        if stored_version < Self::SCHEMA_VERSION {
+            log::info!(
+                "Schema version mismatch ({stored_version} < {}), rebuilding index",
+                Self::SCHEMA_VERSION
+            );
+            // Remove entire index directory and recreate it (handles files + subdirectories)
+            let _ = std::fs::remove_dir_all(index_dir);
+            std::fs::create_dir_all(index_dir)
+                .map_err(|e| format!("Failed to recreate index dir: {e}"))?;
+        }
 
         let (schema, fields) = Self::build_schema();
 
@@ -79,6 +102,8 @@ impl SessionIndex {
             .map_err(|e| format!("Failed to create IndexReader: {e}"))?;
 
         let state = Self::load_state(index_dir);
+
+        let _ = std::fs::write(&version_path, Self::SCHEMA_VERSION.to_string());
 
         Ok(Self {
             index,
@@ -104,6 +129,9 @@ impl SessionIndex {
         let content = builder.add_text_field("content", TEXT | STORED);
         let tools_used = builder.add_text_field("tools_used", TEXT | STORED);
         let files_modified = builder.add_text_field("files_modified", TEXT | STORED);
+        let code_changes = builder.add_text_field("code_changes", TEXT | STORED);
+        let commands_run = builder.add_text_field("commands_run", TEXT | STORED);
+        let tool_details = builder.add_text_field("tool_details", TEXT | STORED);
 
         // Facet fields (hierarchical)
         let project = builder.add_facet_field("project", FacetOptions::default());
@@ -129,6 +157,9 @@ impl SessionIndex {
             git_branch,
             tools_used,
             files_modified,
+            code_changes,
+            commands_run,
+            tool_details,
             schema: schema.clone(),
         };
 
@@ -164,11 +195,53 @@ impl SessionIndex {
     }
 
     /// Extract a human-readable project name from a directory-encoded path.
-    /// e.g. "-home-mamba-work-quill" -> "quill"
+    ///
+    /// Claude Code encodes CWD paths by replacing `/` (and `.`) with `-`, so
+    /// `-home-mamba-work-claude-usage` represents `/home/mamba/work/claude-usage`.
+    /// The encoding is lossy — a literal hyphen in a directory name is
+    /// indistinguishable from a path separator.
+    ///
+    /// We recover the real path by greedily walking the filesystem: at each
+    /// level we try the longest candidate that exists, which correctly
+    /// preserves names like `claude-usage` and `nasha-lab`.
+    ///
+    /// Falls back to the last `-`-delimited segment if the path can't be
+    /// resolved (e.g. the directory was deleted).
     pub fn project_display_name(dir_name: &str) -> String {
-        dir_name
-            .rsplit('-')
-            .next()
+        // Strip the leading `-` which represents the root `/`
+        let remaining = dir_name.strip_prefix('-').unwrap_or(dir_name);
+        if remaining.is_empty() {
+            return dir_name.to_string();
+        }
+
+        let segments: Vec<&str> = remaining.split('-').collect();
+        let mut path = std::path::PathBuf::from("/");
+        let mut i = 0;
+
+        while i < segments.len() {
+            // Greedy: try the longest possible component first
+            let mut matched = false;
+            for end in (i + 1..=segments.len()).rev() {
+                let candidate = segments[i..end].join("-");
+                let try_path = path.join(&candidate);
+                if try_path.exists() {
+                    path = try_path;
+                    i = end;
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                // No filesystem match — append remaining segments as one component
+                let rest = segments[i..].join("-");
+                path.push(&rest);
+                break;
+            }
+        }
+
+        // Return the last component of the recovered path
+        path.file_name()
+            .and_then(|n| n.to_str())
             .filter(|s| !s.is_empty())
             .unwrap_or(dir_name)
             .to_string()
@@ -190,6 +263,9 @@ impl SessionIndex {
         doc.add_text(self.fields.git_branch, &msg.git_branch);
         doc.add_text(self.fields.tools_used, msg.tools_used.join(" "));
         doc.add_text(self.fields.files_modified, msg.files_modified.join(" "));
+        doc.add_text(self.fields.code_changes, msg.code_changes.join("\n"));
+        doc.add_text(self.fields.commands_run, msg.commands_run.join("\n"));
+        doc.add_text(self.fields.tool_details, msg.tool_details.join("\n"));
 
         doc.add_facet(
             self.fields.project,
@@ -217,7 +293,11 @@ impl SessionIndex {
 
     /// Scan ~/.claude/projects/*/*.jsonl and index new/modified files.
     /// Returns the number of newly indexed messages.
-    pub fn startup_scan(&self, app_handle: &tauri::AppHandle) -> Result<usize, String> {
+    pub fn startup_scan(
+        &self,
+        app_handle: &tauri::AppHandle,
+        storage: Option<&crate::storage::Storage>,
+    ) -> Result<usize, String> {
         use tauri::Emitter;
 
         let projects_dir = dirs::home_dir()
@@ -279,13 +359,18 @@ impl SessionIndex {
                     continue;
                 }
 
-                // If file was previously indexed but modified, delete old docs
-                if known_mtime.is_some() {
-                    // Extract session_id from filename (UUID.jsonl)
-                    if let Some(session_id) = file_path.file_stem().and_then(|s| s.to_str()) {
-                        let term = Term::from_field_text(self.fields.session_id, session_id);
-                        let writer = self.writer.lock();
-                        writer.delete_term(term);
+                // If file was previously indexed but modified, delete old docs + tool_actions
+                if known_mtime.is_some()
+                    && let Some(session_id) = file_path.file_stem().and_then(|s| s.to_str())
+                {
+                    let term = Term::from_field_text(self.fields.session_id, session_id);
+                    let writer = self.writer.lock();
+                    writer.delete_term(term);
+                    // Also clear old tool_actions to prevent duplicates
+                    if let Some(storage) = storage
+                        && let Err(e) = storage.delete_tool_actions_for_session(session_id)
+                    {
+                        log::warn!("Failed to delete old tool_actions: {e}");
                     }
                 }
 
@@ -294,6 +379,17 @@ impl SessionIndex {
                 for msg in &messages {
                     if let Err(e) = self.index_message(msg, &project_name, &hostname) {
                         log::warn!("Failed to index message: {e}");
+                    }
+                    // Store tool actions in SQLite
+                    if !msg.tool_actions.is_empty()
+                        && let Some(storage) = storage
+                        && let Err(e) = storage.store_tool_actions(
+                            &msg.tool_actions,
+                            &msg.uuid,
+                            &msg.session_id,
+                        )
+                    {
+                        log::warn!("Failed to store tool actions: {e}");
                     }
                 }
 
@@ -335,12 +431,26 @@ impl SessionIndex {
         let searcher = self.searcher();
         let f = &self.fields;
 
-        // Build query parser targeting content, tools_used, files_modified
-        let mut parser =
-            QueryParser::for_index(&self.index, vec![f.content, f.tools_used, f.files_modified]);
+        // Build query parser targeting content, tools_used, files_modified, and new fields
+        let mut parser = QueryParser::for_index(
+            &self.index,
+            vec![
+                f.content,
+                f.tools_used,
+                f.files_modified,
+                f.code_changes,
+                f.commands_run,
+                f.tool_details,
+            ],
+        );
         parser.set_conjunction_by_default();
 
-        let (text_query, _errors) = parser.parse_query_lenient(query);
+        let text_query: Box<dyn tantivy::query::Query> = if query.trim().is_empty() {
+            Box::new(tantivy::query::AllQuery)
+        } else {
+            let (parsed, _errors) = parser.parse_query_lenient(query);
+            parsed
+        };
 
         // Combine with filter clauses via BooleanQuery
         let mut clauses: Vec<(Occur, Box<dyn tantivy::query::Query>)> =
@@ -378,6 +488,15 @@ impl SessionIndex {
         // Git branch filter
         if let Some(ref branch) = filters.git_branch {
             let term = Term::from_field_text(f.git_branch, branch);
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+            ));
+        }
+
+        // Session ID filter
+        if let Some(ref sid) = filters.session_id {
+            let term = Term::from_field_text(f.session_id, sid);
             clauses.push((
                 Occur::Must,
                 Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
@@ -492,6 +611,9 @@ impl SessionIndex {
                 git_branch: get_text(f.git_branch),
                 tools_used: get_text(f.tools_used),
                 files_modified: get_text(f.files_modified),
+                code_changes: get_text(f.code_changes),
+                commands_run: get_text(f.commands_run),
+                tool_details: get_text(f.tool_details),
                 score: 0.0,
             });
         }
@@ -641,6 +763,9 @@ pub struct SearchHit {
     pub git_branch: String,
     pub tools_used: String,
     pub files_modified: String,
+    pub code_changes: String,
+    pub commands_run: String,
+    pub tool_details: String,
     pub score: f32,
 }
 
@@ -659,6 +784,7 @@ pub struct SearchFilters {
     pub git_branch: Option<String>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
+    pub session_id: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -693,6 +819,18 @@ pub struct SessionContext {
 // Extracted message -- intermediate struct from JSONL parsing
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
+pub struct ToolAction {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub category: String, // "code_change", "command", "tool_detail"
+    pub file_path: Option<String>,
+    pub summary: String,
+    pub full_input: Option<String>,  // JSON string, max 10KB
+    pub full_output: Option<String>, // JSON string, max 10KB, set later from tool_result
+    pub timestamp: String,
+}
+
 pub struct ExtractedMessage {
     pub uuid: String,
     pub session_id: String,
@@ -702,11 +840,109 @@ pub struct ExtractedMessage {
     pub git_branch: String,
     pub tools_used: Vec<String>,
     pub files_modified: Vec<String>,
+    // New fields for tool data summaries
+    pub code_changes: Vec<String>,
+    pub commands_run: Vec<String>,
+    pub tool_details: Vec<String>,
+    // Tool actions for SQLite storage
+    #[allow(dead_code)]
+    pub tool_actions: Vec<ToolAction>,
 }
 
 // ---------------------------------------------------------------------------
 // JSONL parsing
 // ---------------------------------------------------------------------------
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        // Find the last char boundary at or before max_len to avoid panic on multi-byte UTF-8
+        let boundary = s
+            .char_indices()
+            .take_while(|(i, _)| *i <= max_len)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        format!("{}... [truncated]", &s[..boundary])
+    }
+}
+
+/// Build a human-readable summary for a tool invocation.
+/// Returns (category, summary, file_path).
+fn build_tool_summary(
+    tool_name: &str,
+    input: Option<&serde_json::Value>,
+) -> (String, String, Option<String>) {
+    let inp = input.and_then(|v| v.as_object());
+
+    let get_str = |key: &str| -> String {
+        inp.and_then(|o| o.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    match tool_name {
+        "Edit" => {
+            let file_path = get_str("file_path");
+            let old = truncate(&get_str("old_string"), 80);
+            let new = truncate(&get_str("new_string"), 80);
+            let summary = format!("Edit {file_path}: \"{old}\" -> \"{new}\"");
+            ("code_change".to_string(), summary, Some(file_path))
+        }
+        "Write" => {
+            let file_path = get_str("file_path");
+            let content_preview = truncate(&get_str("content"), 120);
+            let summary = format!("Write {file_path}: {content_preview}");
+            ("code_change".to_string(), summary, Some(file_path))
+        }
+        "Bash" => {
+            let command = get_str("command");
+            let summary = format!("$ {command}");
+            ("command".to_string(), summary, None)
+        }
+        "Read" => {
+            let file_path = get_str("file_path");
+            let summary = format!("Read {file_path}");
+            ("tool_detail".to_string(), summary, Some(file_path))
+        }
+        "Grep" => {
+            let pattern = get_str("pattern");
+            let path = get_str("path");
+            let glob = get_str("glob");
+            let target = if !path.is_empty() { path } else { glob };
+            let summary = format!("Grep \"{pattern}\" in {target}");
+            ("tool_detail".to_string(), summary, None)
+        }
+        "Glob" => {
+            let pattern = get_str("pattern");
+            let summary = format!("Glob \"{pattern}\"");
+            ("tool_detail".to_string(), summary, None)
+        }
+        "Agent" => {
+            let prompt = truncate(&get_str("prompt"), 120);
+            let summary = format!("Agent: {prompt}");
+            ("tool_detail".to_string(), summary, None)
+        }
+        _ => {
+            let summary = tool_name.to_string();
+            ("tool_detail".to_string(), summary, None)
+        }
+    }
+}
+
+#[allow(dead_code)]
+struct ToolUseEntry {
+    tool_name: String,
+    category: String,
+    file_path: Option<String>,
+    summary: String,
+    full_input: Option<String>,
+    timestamp: String,
+    // Index into messages vec where this tool_use appeared
+    message_idx: usize,
+}
 
 /// Extract indexable messages from a Claude Code JSONL session file.
 /// Only "user" and "assistant" type messages are extracted.
@@ -720,7 +956,9 @@ pub fn extract_messages_from_jsonl(path: &Path) -> Vec<ExtractedMessage> {
         }
     };
 
-    let mut messages = Vec::new();
+    let mut messages: Vec<ExtractedMessage> = Vec::new();
+    // Maps tool_use block id -> entry for cross-message correlation
+    let mut tool_use_map: HashMap<String, ToolUseEntry> = HashMap::new();
 
     for line in contents.lines() {
         if line.trim().is_empty() {
@@ -772,12 +1010,15 @@ pub fn extract_messages_from_jsonl(path: &Path) -> Vec<ExtractedMessage> {
             .and_then(|v| v.as_str())
             .unwrap_or(msg_type)
             .to_string();
-
         let content_val = message.get("content");
 
         let mut text_parts: Vec<String> = Vec::new();
         let mut tools_used: Vec<String> = Vec::new();
         let mut files_modified: Vec<String> = Vec::new();
+        let mut code_changes: Vec<String> = Vec::new();
+        let mut commands_run: Vec<String> = Vec::new();
+        let mut tool_details_vec: Vec<String> = Vec::new();
+        let mut tool_actions: Vec<ToolAction> = Vec::new();
 
         match content_val {
             // Content is a plain string
@@ -795,23 +1036,140 @@ pub fn extract_messages_from_jsonl(path: &Path) -> Vec<ExtractedMessage> {
                             }
                         }
                         "tool_use" => {
-                            // Extract tool name
-                            if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                                tools_used.push(name.to_string());
+                            let tool_id = block
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = block
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let input = block.get("input");
+
+                            if !name.is_empty() {
+                                tools_used.push(name.clone());
                             }
+
                             // Extract file paths from input
-                            if let Some(input) = block.get("input").and_then(|v| v.as_object()) {
+                            if let Some(inp) = input.and_then(|v| v.as_object()) {
                                 for key in ["file_path", "path", "pattern"] {
-                                    if let Some(val) = input.get(key).and_then(|v| v.as_str())
+                                    if let Some(val) = inp.get(key).and_then(|v| v.as_str())
                                         && !val.is_empty()
                                     {
                                         files_modified.push(val.to_string());
                                     }
                                 }
                             }
+
+                            // Build summary and categorize
+                            let (category, summary, file_path) = build_tool_summary(&name, input);
+
+                            match category.as_str() {
+                                "code_change" => code_changes.push(summary.clone()),
+                                "command" => commands_run.push(summary.clone()),
+                                "tool_detail" => tool_details_vec.push(summary.clone()),
+                                _ => {}
+                            }
+
+                            // Serialize full input (capped at 10KB)
+                            let full_input = input.map(|v| {
+                                let s = v.to_string();
+                                truncate(&s, 10240)
+                            });
+
+                            // Store in map for later correlation with tool_result
+                            let action = ToolAction {
+                                tool_use_id: tool_id.clone(),
+                                tool_name: name.clone(),
+                                category: category.clone(),
+                                file_path: file_path.clone(),
+                                summary: summary.clone(),
+                                full_input: full_input.clone(),
+                                full_output: None,
+                                timestamp: timestamp.clone(),
+                            };
+                            tool_actions.push(action);
+
+                            if !tool_id.is_empty() {
+                                tool_use_map.insert(
+                                    tool_id,
+                                    ToolUseEntry {
+                                        tool_name: name,
+                                        category,
+                                        file_path,
+                                        summary,
+                                        full_input,
+                                        timestamp: timestamp.clone(),
+                                        message_idx: messages.len(),
+                                    },
+                                );
+                            }
                         }
-                        // Skip thinking, tool_result, image blocks
-                        "thinking" | "tool_result" | "image" => {}
+                        "tool_result" => {
+                            let tool_use_id = block
+                                .get("tool_use_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+
+                            // Capture output content
+                            let output_content = block.get("content").map(|v| {
+                                let s = match v {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::Array(arr) => arr
+                                        .iter()
+                                        .filter_map(|item| {
+                                            if item.get("type").and_then(|t| t.as_str())
+                                                == Some("text")
+                                            {
+                                                item.get("text")
+                                                    .and_then(|t| t.as_str())
+                                                    .map(|s| s.to_string())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    _ => v.to_string(),
+                                };
+                                truncate(&s, 10240)
+                            });
+
+                            // Correlate with the original tool_use
+                            if let Some(entry) = tool_use_map.get_mut(&tool_use_id) {
+                                // Update the ToolAction in the original message
+                                if entry.message_idx < messages.len()
+                                    && let Some(action) = messages[entry.message_idx]
+                                        .tool_actions
+                                        .iter_mut()
+                                        .find(|a| a.tool_use_id == tool_use_id)
+                                {
+                                    action.full_output = output_content.clone();
+                                }
+
+                                // For Bash commands, append truncated output to commands_run summary
+                                if entry.tool_name == "Bash"
+                                    && let Some(ref output) = output_content
+                                {
+                                    let output_preview = truncate(output, 300);
+                                    let enhanced = format!("{}\n{}", entry.summary, output_preview);
+                                    // Update the summary in the original message's commands_run
+                                    if entry.message_idx < messages.len()
+                                        && let Some(cmd) = messages[entry.message_idx]
+                                            .commands_run
+                                            .iter_mut()
+                                            .find(|c: &&mut String| c.starts_with(&entry.summary))
+                                    {
+                                        *cmd = enhanced;
+                                    }
+                                }
+                            }
+                        }
+                        // Skip thinking, image blocks
+                        "thinking" | "image" => {}
                         _ => {}
                     }
                 }
@@ -833,6 +1191,10 @@ pub fn extract_messages_from_jsonl(path: &Path) -> Vec<ExtractedMessage> {
             git_branch,
             tools_used,
             files_modified,
+            code_changes,
+            commands_run,
+            tool_details: tool_details_vec,
+            tool_actions,
         });
     }
 
@@ -884,5 +1246,6 @@ pub async fn rebuild_search_index(
     state: tauri::State<'_, SessionIndexState>,
 ) -> Result<usize, String> {
     let idx = state.0.clone();
-    crate::run_blocking(move || idx.startup_scan(&app))
+    let storage = crate::STORAGE.get();
+    crate::run_blocking(move || idx.startup_scan(&app, storage))
 }

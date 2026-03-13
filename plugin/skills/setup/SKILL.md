@@ -1,13 +1,18 @@
 ---
 name: setup
-description: Configure the Quill widget connection. Run this after installing the plugin to set the widget IP address and bearer secret.
+description: Configure the Quill widget connection and MCP server. Run this after installing the plugin to set the widget IP address and bearer secret.
 ---
 
-You are configuring the Quill widget hook. This hook reports token usage from each Claude Code turn to the Quill desktop widget over HTTP.
+You are configuring the Quill plugin. This plugin has two components:
 
-The widget server requires a bearer secret for authentication. The secret is stored at `~/.local/share/io.quill.toolkit/auth_secret` on the machine running the widget.
+1. **Usage hook** — reports per-turn token usage to the Quill desktop widget over HTTP
+2. **MCP server** — lets you query session history, search past conversations, and analyze usage patterns
+
+The widget server requires a bearer secret for authentication. The secret is stored at `~/.local/share/com.quilltoolkit.app/auth_secret` on the machine running the widget.
 
 Follow these steps exactly:
+
+## Part 1: Widget Connection
 
 1. Use AskUserQuestion to ask the user for the widget address:
    - Question: "Where is the Quill widget running?"
@@ -17,7 +22,7 @@ Follow these steps exactly:
 
 2. If they choose "This machine":
    - Set the URL to `http://localhost:19876`.
-   - Read the secret from `~/.local/share/io.quill.toolkit/auth_secret` using the Read tool.
+   - Read the secret from `~/.local/share/com.quilltoolkit.app/auth_secret` using the Read tool.
    - If the secret file exists, display it to the user and tell them:
      "Save this secret — you'll need it when running `/quill-hook:setup` on any other machine that should report to this widget."
    - If the secret file doesn't exist, warn the user that the widget doesn't appear to have been launched yet. The config will be saved and will work once the widget creates the secret on first launch. They can re-run `/quill-hook:setup` afterward.
@@ -28,7 +33,7 @@ Follow these steps exactly:
      Provide reasonable example options like "192.168.1.100" with descriptions, but they'll likely type their own.
    - Construct the URL as `http://<their-input>:19876`
    - Use AskUserQuestion to ask:
-     "What is the bearer secret from the widget machine? (Run `cat ~/.local/share/io.quill.toolkit/auth_secret` on that machine to get it)"
+     "What is the bearer secret from the widget machine? (Run `cat ~/.local/share/com.quilltoolkit.app/auth_secret` on that machine to get it)"
      Provide a single option "I don't have it yet" with description "Skip for now — the hook will fail until a valid secret is configured. Re-run /quill-hook:setup when you have it."
    - If they provide a secret, use it. If they choose "I don't have it yet", set secret to empty string and warn them.
 
@@ -53,6 +58,36 @@ Follow these steps exactly:
    - First, run a health check: `curl -s -m 3 <url>/api/v1/health`
    - If the health check returns "ok" AND a secret was configured, run an authenticated test:
      `curl -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer <secret>' -d '{"session_id":"setup-test","hostname":"setup-test","input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}' <url>/api/v1/tokens`
-   - If both succeed, tell the user setup is complete and the hook will now report token usage after each turn.
+   - If both succeed, tell the user the hook is connected and will report token usage after each turn.
    - If the health check fails, warn the user that the widget doesn't seem reachable at that address, but the config has been saved and will work once the widget is running.
    - If the health check passes but the auth test fails, warn the user that the secret may be incorrect. They can re-run `/quill-hook:setup` to fix it.
+
+## Part 2: MCP Server Verification
+
+7. Check that `uv` is installed:
+   - Run: `uv --version`
+   - If `uv` is not found, tell the user:
+     "The Quill MCP server requires `uv` (Python package manager). Install it with: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+     Then re-run `/quill-hook:setup`."
+   - If `uv` is found, proceed to step 8.
+
+8. Verify the MCP server can start:
+   - Run: `uv run --directory ${CLAUDE_PLUGIN_ROOT}/mcp python -c "from server import mcp; print('ok')"`
+   - If it succeeds, tell the user: "The Quill MCP server is ready. It provides 12 tools for querying your session history, searching past conversations, and analyzing usage patterns. The MCP server starts automatically — no additional configuration needed."
+   - If it fails, show the error and suggest: "Try running `uv sync --directory ${CLAUDE_PLUGIN_ROOT}/mcp` to install dependencies, then re-run `/quill-hook:setup`."
+
+9. Print a summary:
+   ```
+   Setup complete!
+
+   Hook: Reports token usage to <url> as "<hostname>"
+   MCP:  12 tools for querying session history (auto-starts with Claude Code)
+
+   Available MCP tools:
+   - list_projects / list_sessions / get_session_overview — browse sessions
+   - search_history / get_session_context — search and drill into conversations
+   - get_file_history / get_branch_activity / find_related_sessions — cross-reference
+   - get_token_usage / get_learned_rules — analytics
+   - get_tool_details — inspect full tool input/output
+   - get_index_status — check search index health
+   ```

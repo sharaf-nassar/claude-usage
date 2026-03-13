@@ -112,6 +112,9 @@ pub async fn start_server(
         .route("/api/v1/learning/rules", post(post_learned_rule))
         .route("/api/v1/sessions/notify", post(post_session_notify))
         .route("/api/v1/sessions/messages", post(post_session_messages))
+        .route("/api/v1/sessions/search", get(get_session_search))
+        .route("/api/v1/sessions/context", get(get_session_context_api))
+        .route("/api/v1/sessions/facets", get(get_session_facets))
         .with_state(state);
 
     // Bind to 0.0.0.0 intentionally — remote hosts need to reach this server
@@ -526,16 +529,31 @@ async fn post_session_notify(
         }
     };
     let result = tokio::task::block_in_place(|| -> Result<usize, String> {
-        // Delete existing docs for this session before re-indexing
+        // Delete existing docs + tool_actions for this session before re-indexing
         {
             let writer = idx.writer.lock();
             let term = tantivy::Term::from_field_text(idx.fields.session_id, &payload.session_id);
             writer.delete_term(term);
         }
+        if let Err(e) = state
+            .storage
+            .delete_tool_actions_for_session(&payload.session_id)
+        {
+            log::warn!("Failed to delete old tool_actions: {e}");
+        }
 
         let mut count = 0usize;
         for msg in &messages {
             idx.index_message(msg, &project_name, "local")?;
+            // Store tool actions in SQLite for this message
+            if !msg.tool_actions.is_empty()
+                && let Err(e) =
+                    state
+                        .storage
+                        .store_tool_actions(&msg.tool_actions, &msg.uuid, &msg.session_id)
+            {
+                log::warn!("Failed to store tool actions: {e}");
+            }
             count += 1;
         }
 
@@ -618,6 +636,10 @@ async fn post_session_messages(
             git_branch: payload.git_branch.clone(),
             tools_used: m.tools_used.clone(),
             files_modified: m.files_modified.clone(),
+            code_changes: Vec::new(),
+            commands_run: Vec::new(),
+            tool_details: Vec::new(),
+            tool_actions: Vec::new(),
         })
         .collect();
 
@@ -654,6 +676,158 @@ async fn post_session_messages(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error".to_string(),
+            )
+        }
+    }
+}
+
+// --- Session search/context/facets GET endpoints ---
+
+async fn get_session_search(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+
+    let idx = match &state.session_index {
+        Some(idx) => idx.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Session index not available"})),
+            );
+        }
+    };
+
+    let query = params.get("q").cloned().unwrap_or_default();
+    let page: usize = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let page_size: usize = params
+        .get("page_size")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10)
+        .min(100);
+
+    let filters = sessions::SearchFilters {
+        project: params.get("project").cloned(),
+        host: params.get("host").cloned(),
+        role: params.get("role").cloned(),
+        git_branch: params.get("git_branch").cloned(),
+        session_id: params.get("session_id").cloned(),
+        date_from: params.get("date_from").cloned(),
+        date_to: params.get("date_to").cloned(),
+    };
+
+    let result = tokio::task::block_in_place(|| idx.search(&query, &filters, page, page_size));
+
+    match result {
+        Ok(results) => (StatusCode::OK, Json(serde_json::json!(results))),
+        Err(e) => {
+            log::error!("Session search error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Search failed"})),
+            )
+        }
+    }
+}
+
+async fn get_session_context_api(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+
+    let idx = match &state.session_index {
+        Some(idx) => idx.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Session index not available"})),
+            );
+        }
+    };
+
+    let session_id = match params.get("session_id") {
+        Some(id) => id.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "session_id is required"})),
+            );
+        }
+    };
+
+    let message_id = match params.get("message_id") {
+        Some(id) => id.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "message_id is required"})),
+            );
+        }
+    };
+
+    let window: usize = params
+        .get("window")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+
+    let result = tokio::task::block_in_place(|| idx.get_context(&session_id, &message_id, window));
+
+    match result {
+        Ok(context) => (StatusCode::OK, Json(serde_json::json!(context))),
+        Err(e) => {
+            log::error!("Session context error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Context retrieval failed"})),
+            )
+        }
+    }
+}
+
+async fn get_session_facets(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.secret) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Unauthorized"})),
+        );
+    }
+
+    let idx = match &state.session_index {
+        Some(idx) => idx.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Session index not available"})),
+            );
+        }
+    };
+
+    let result = tokio::task::block_in_place(|| idx.get_facets());
+
+    match result {
+        Ok(facets) => (StatusCode::OK, Json(serde_json::json!(facets))),
+        Err(e) => {
+            log::error!("Session facets error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Facets retrieval failed"})),
             )
         }
     }

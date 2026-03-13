@@ -50,7 +50,7 @@ fn db_path() -> Result<PathBuf, String> {
     let data_dir = dirs::data_local_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
         .ok_or("Cannot determine data directory")?;
-    let app_dir = data_dir.join("io.quill.toolkit");
+    let app_dir = data_dir.join("com.quilltoolkit.app");
     std::fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create app data dir: {e}"))?;
 
     #[cfg(unix)]
@@ -283,6 +283,32 @@ impl Storage {
 
             conn.execute("INSERT INTO schema_version (version) VALUES (4)", [])
                 .map_err(|e| format!("Failed to record migration 4: {e}"))?;
+        }
+
+        // Migration 5: tool_actions table for MCP server
+        if current_version < 5 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS tool_actions (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id    TEXT NOT NULL,
+                    session_id    TEXT NOT NULL,
+                    tool_name     TEXT NOT NULL,
+                    category      TEXT NOT NULL,
+                    file_path     TEXT,
+                    summary       TEXT NOT NULL,
+                    full_input    TEXT,
+                    full_output   TEXT,
+                    timestamp     TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_tool_actions_session  ON tool_actions(session_id);
+                CREATE INDEX IF NOT EXISTS idx_tool_actions_message  ON tool_actions(message_id);
+                CREATE INDEX IF NOT EXISTS idx_tool_actions_file     ON tool_actions(file_path);
+                CREATE INDEX IF NOT EXISTS idx_tool_actions_category ON tool_actions(category);",
+            )
+            .map_err(|e| format!("Migration 5 (tool_actions table) error: {e}"))?;
+
+            conn.execute("INSERT INTO schema_version (version) VALUES (5)", [])
+                .map_err(|e| format!("Failed to record migration 5: {e}"))?;
         }
 
         let storage = Self {
@@ -1769,6 +1795,57 @@ impl Storage {
 
         tx.commit().map_err(|e| format!("Commit error: {e}"))?;
 
+        Ok(())
+    }
+
+    /// Delete all tool_actions for a session (used before re-indexing to prevent duplicates).
+    pub fn delete_tool_actions_for_session(&self, session_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM tool_actions WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )
+        .map_err(|e| format!("Delete tool_actions for session: {e}"))?;
+        Ok(())
+    }
+
+    pub fn store_tool_actions(
+        &self,
+        actions: &[crate::sessions::ToolAction],
+        message_id: &str,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock();
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Begin tool_actions transaction: {e}"))?;
+
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO tool_actions (message_id, session_id, tool_name, category, file_path, summary, full_input, full_output, timestamp)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .map_err(|e| format!("Prepare store_tool_actions: {e}"))?;
+
+            for action in actions {
+                stmt.execute(rusqlite::params![
+                    message_id,
+                    session_id,
+                    action.tool_name,
+                    action.category,
+                    action.file_path,
+                    action.summary,
+                    action.full_input,
+                    action.full_output,
+                    action.timestamp,
+                ])
+                .map_err(|e| format!("Insert tool_action: {e}"))?;
+            }
+        }
+
+        tx.commit()
+            .map_err(|e| format!("Commit tool_actions: {e}"))?;
         Ok(())
     }
 }

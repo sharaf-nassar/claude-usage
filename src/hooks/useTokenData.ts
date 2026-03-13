@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { RangeType, TokenDataPoint, TokenStats } from "../types";
@@ -24,8 +24,12 @@ export function useTokenData(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const initialLoadDone = useRef(false);
+
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    if (!initialLoadDone.current) {
+      setLoading(true);
+    }
     setError(null);
 
     try {
@@ -57,6 +61,7 @@ export function useTokenData(
       setError(String(e));
     } finally {
       setLoading(false);
+      initialLoadDone.current = true;
     }
   }, [range, hostname, sessionId, cwd]);
 
@@ -78,6 +83,12 @@ export function useTokenData(
       if (timer) clearTimeout(timer);
       unlistenPromise.then((fn) => fn());
     };
+  }, [fetchData]);
+
+  // Periodic fallback refresh for idle periods when no token events fire
+  useEffect(() => {
+    const interval = setInterval(fetchData, 60_000);
+    return () => clearInterval(interval);
   }, [fetchData]);
 
   return { history, stats, hostnames, loading, error, refresh: fetchData };

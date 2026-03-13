@@ -1,6 +1,6 @@
 {
   "productName": "Quill",
-  "identifier": "io.quill.toolkit",
+  "identifier": "com.quilltoolkit.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",

@@ -116,6 +116,32 @@ interface UsageChartProps {
   tokenData: TokenDataPoint[];
 }
 
+/** Minimum gap (ms) before we append a "now" anchor to extend the X-axis */
+const NOW_ANCHOR_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+
+/**
+ * If the last data point is older than NOW_ANCHOR_THRESHOLD_MS, append a
+ * sentinel point at "now" so the chart X-axis extends to the current time
+ * and idle gaps are visible rather than compressed to the right edge.
+ */
+function anchorToNow<T extends { timestamp: string }>(
+  points: T[],
+  defaults: Omit<T, "timestamp">,
+): T[] {
+  if (points.length === 0) return points;
+
+  const lastTs = new Date(points[points.length - 1].timestamp).getTime();
+  const now = Date.now();
+
+  if (now - lastTs > NOW_ANCHOR_THRESHOLD_MS) {
+    return [
+      ...points,
+      { ...defaults, timestamp: new Date(now).toISOString() } as T,
+    ];
+  }
+  return points;
+}
+
 function UsageChart({ data, range, bucket, tokenData }: UsageChartProps) {
   if (!data || data.length === 0) {
     return (
@@ -127,10 +153,22 @@ function UsageChart({ data, range, bucket, tokenData }: UsageChartProps) {
   const gradientId = `gradient-${bucket.replace(/\s/g, "")}`;
   const hasTokenData = tokenData && tokenData.length > 0;
 
+  // Anchor data to "now" so idle gaps are visible in the chart
+  const anchoredData = anchorToNow(data, { utilization: 0 } as Omit<DataPoint, "timestamp">);
+  const anchoredTokenData = hasTokenData
+    ? anchorToNow(tokenData, {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        total_tokens: 0,
+      } as Omit<TokenDataPoint, "timestamp">)
+    : tokenData;
+
   // Merge usage and token data by timestamp for the composed chart
   const mergedData: MergedDataPoint[] = hasTokenData
-    ? mergeDataSeries(data, tokenData)
-    : data.map((d) => ({ ...d, total_tokens: null }));
+    ? mergeDataSeries(anchoredData, anchoredTokenData)
+    : anchoredData.map((d) => ({ ...d, total_tokens: null }));
 
   const formatter = (v: string) => formatTime(v, range);
   const allowedTicks = dedupeTickLabels(mergedData, formatter);
@@ -145,7 +183,7 @@ function UsageChart({ data, range, bucket, tokenData }: UsageChartProps) {
       <div className="chart-container">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart
-            data={data}
+            data={anchoredData}
             margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
           >
             <defs>
@@ -162,7 +200,7 @@ function UsageChart({ data, range, bucket, tokenData }: UsageChartProps) {
             <XAxis
               dataKey="timestamp"
               tickFormatter={formatter}
-              ticks={data
+              ticks={anchoredData
                 .filter((_, i) => allowedTicks.has(i))
                 .map((d) => d.timestamp)}
               stroke="rgba(255,255,255,0.2)"

@@ -386,7 +386,7 @@ pub fn run() {
                 let index_dir = dirs::data_local_dir()
                     .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share")))
                     .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                    .join("io.quill.toolkit")
+                    .join("com.quilltoolkit.app")
                     .join("session-index");
 
                 match sessions::SessionIndex::open_or_create(&index_dir) {
@@ -398,8 +398,9 @@ pub fn run() {
                         let scan_idx = idx.clone();
                         let scan_handle = app.handle().clone();
                         tauri::async_runtime::spawn(async move {
+                            let storage_ref = STORAGE.get();
                             match tokio::task::block_in_place(|| {
-                                scan_idx.startup_scan(&scan_handle)
+                                scan_idx.startup_scan(&scan_handle, storage_ref)
                             }) {
                                 Ok(count) => {
                                     log::info!("Session index startup scan: {count} messages");
