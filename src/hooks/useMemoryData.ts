@@ -29,6 +29,9 @@ export interface OptimizationSuggestion {
   error: string | null;
   resolved_at: string | null;
   created_at: string;
+  original_content: string | null;
+  diff_summary: string | null;
+  backup_data: string | null;
 }
 
 export interface OptimizationRun {
@@ -84,7 +87,9 @@ export function useMemoryData() {
         invoke<MemoryFile[]>("get_memory_files", { projectPath }),
         invoke<OptimizationSuggestion[]>("get_optimization_suggestions", {
           projectPath,
-          runId: null,
+          statusFilter: null,
+          limit: 200,
+          offset: 0,
         }),
         invoke<OptimizationRun[]>("get_optimization_runs", {
           projectPath,
@@ -206,6 +211,18 @@ export function useMemoryData() {
     [refresh, toast],
   );
 
+  const undoSuggestion = useCallback(
+    async (id: number) => {
+      try {
+        await invoke("undo_suggestion", { suggestionId: id });
+        refresh();
+      } catch (e) {
+        toast("error", `Failed to undo: ${e}`);
+      }
+    },
+    [refresh, toast],
+  );
+
   const addCustomProject = useCallback(
     async (path: string) => {
       try {
@@ -272,14 +289,19 @@ export function useMemoryData() {
       }
       setOptimizing(true);
       setLogs([]);
+      const BATCH_SIZE = 3;
       try {
-        for (const p of withMemories) {
-          await invoke("trigger_memory_optimization", {
-            projectPath: p.path,
-          });
+        for (let i = 0; i < withMemories.length; i += BATCH_SIZE) {
+          const batch = withMemories.slice(i, i + BATCH_SIZE);
+          await Promise.allSettled(
+            batch.map((p) =>
+              invoke("trigger_memory_optimization", { projectPath: p.path }),
+            ),
+          );
         }
       } catch (e) {
         toast("warning", String(e));
+      } finally {
         setOptimizing(false);
       }
     },
@@ -300,6 +322,7 @@ export function useMemoryData() {
     approveSuggestion,
     denySuggestion,
     undenySuggestion,
+    undoSuggestion,
     addCustomProject,
     removeCustomProject,
     deleteMemoryFile,

@@ -3295,16 +3295,20 @@ dependencies = [
  "dirs",
  "futures",
  "hex",
+ "http",
  "log",
  "parking_lot",
  "rand 0.8.5",
+ "regex",
  "reqwest",
+ "reqwest-middleware",
  "rig-core",
  "rusqlite",
  "schemars 1.2.1",
  "serde",
  "serde_json",
  "sha2",
+ "similar",
  "subtle",
  "tantivy",
  "tauri",
@@ -3671,6 +3675,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "reqwest-middleware"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "199dda04a536b532d0cc04d7979e39b1c763ea749bf91507017069c00b96056f"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "http",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.18",
+ "tower-service",
+]
+
+[[package]]
 name = "rig-core"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3692,6 +3711,7 @@ dependencies = [
  "ordered-float",
  "pin-project-lite",
  "reqwest",
+ "reqwest-middleware",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -4255,6 +4275,12 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"

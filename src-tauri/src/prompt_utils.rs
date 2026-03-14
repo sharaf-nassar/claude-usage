@@ -10,6 +10,19 @@ pub fn sanitize_for_prompt(s: &str) -> String {
         .collect()
 }
 
+/// Escape content for safe embedding in structured XML prompts.
+/// Replaces & with &amp; and < with &lt; universally to prevent content
+/// from breaking out of XML wrapper tags. The wrapper tags themselves
+/// are added by build_prompt AFTER escaping, so they remain valid.
+/// Markdown structure (brackets, braces, backticks, newlines) is preserved.
+///
+/// NOTE: This replaces `sanitize_for_prompt` for the memory optimizer.
+/// The learning system still uses `sanitize_for_prompt` which strips
+/// brackets/backticks/newlines — a separate migration.
+pub fn escape_for_prompt(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;")
+}
+
 /// Truncate a string at a valid UTF-8 char boundary.
 pub fn safe_truncate(s: &str, max_bytes: usize) -> &str {
     if max_bytes >= s.len() {

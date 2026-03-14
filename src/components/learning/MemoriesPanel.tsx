@@ -18,6 +18,7 @@ export function MemoriesPanel() {
     approveSuggestion,
     denySuggestion,
     undenySuggestion,
+    undoSuggestion,
     addCustomProject,
     removeCustomProject,
     deleteMemoryFile,
@@ -27,6 +28,7 @@ export function MemoriesPanel() {
   const [showManage, setShowManage] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [showDenied, setShowDenied] = useState(false);
+  const [showApproved, setShowApproved] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState<
@@ -55,6 +57,8 @@ export function MemoriesPanel() {
 
   const pendingSuggestions = suggestions.filter((s) => s.status === "pending");
   const deniedSuggestions = suggestions.filter((s) => s.status === "denied");
+  const approvedSuggestions = suggestions.filter((s) => s.status === "approved");
+  const actionableSuggestions = [...pendingSuggestions, ...suggestions.filter((s) => s.status === "undone")];
 
   const projectsWithMemories = projects.filter((p) => p.memory_count > 0);
 
@@ -482,20 +486,21 @@ export function MemoriesPanel() {
           )}
 
           {/* Suggestions */}
-          {pendingSuggestions.length > 0 && (
+          {actionableSuggestions.length > 0 && (
             <div className="learning-section">
               <div className="learning-section-header">
                 SUGGESTIONS
                 <span className="learning-section-count">
-                  {pendingSuggestions.length}
+                  {actionableSuggestions.length}
                 </span>
               </div>
-              {pendingSuggestions.map((s) => (
+              {actionableSuggestions.map((s) => (
                 <SuggestionCard
                   key={s.id}
                   suggestion={s}
                   onApprove={approveSuggestion}
                   onDeny={denySuggestion}
+                  onUndo={undoSuggestion}
                 />
               ))}
             </div>
@@ -522,6 +527,34 @@ export function MemoriesPanel() {
                     onApprove={approveSuggestion}
                     onDeny={denySuggestion}
                     onUndeny={undenySuggestion}
+                    onUndo={undoSuggestion}
+                  />
+                ))}
+            </div>
+          )}
+
+          {/* Approved suggestions (togglable) */}
+          {approvedSuggestions.length > 0 && (
+            <div className="learning-section">
+              <div
+                className="learning-section-header"
+                style={{ cursor: "pointer" }}
+                onClick={() => setShowApproved(!showApproved)}
+              >
+                {showApproved ? "▾" : "▸"} APPROVED
+                <span className="learning-section-count">
+                  {approvedSuggestions.length}
+                </span>
+              </div>
+              {showApproved &&
+                approvedSuggestions.map((s) => (
+                  <SuggestionCard
+                    key={s.id}
+                    suggestion={s}
+                    onApprove={approveSuggestion}
+                    onDeny={denySuggestion}
+                    onUndeny={undenySuggestion}
+                    onUndo={undoSuggestion}
                   />
                 ))}
             </div>

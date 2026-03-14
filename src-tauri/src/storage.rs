@@ -361,6 +361,42 @@ impl Storage {
                 .map_err(|e| format!("Failed to record migration 6: {e}"))?;
         }
 
+        // Migration 7: memory optimizer redesign — diff, backup, and cleanup support
+        if current_version < 7 {
+            let has_col = |col: &str| -> bool {
+                conn.prepare(&format!(
+                    "SELECT {col} FROM optimization_suggestions LIMIT 0"
+                ))
+                .is_ok()
+            };
+            if !has_col("original_content") {
+                conn.execute_batch(
+                    "ALTER TABLE optimization_suggestions ADD COLUMN original_content TEXT;",
+                )
+                .map_err(|e| format!("Migration 7 (original_content): {e}"))?;
+            }
+            if !has_col("diff_summary") {
+                conn.execute_batch(
+                    "ALTER TABLE optimization_suggestions ADD COLUMN diff_summary TEXT;",
+                )
+                .map_err(|e| format!("Migration 7 (diff_summary): {e}"))?;
+            }
+            if !has_col("backup_data") {
+                conn.execute_batch(
+                    "ALTER TABLE optimization_suggestions ADD COLUMN backup_data TEXT;",
+                )
+                .map_err(|e| format!("Migration 7 (backup_data): {e}"))?;
+            }
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_optsug_status_created ON optimization_suggestions(status, created_at);
+                 CREATE INDEX IF NOT EXISTS idx_optsug_status_resolved ON optimization_suggestions(status, resolved_at);",
+            )
+            .map_err(|e| format!("Migration 7 (indexes): {e}"))?;
+
+            conn.execute("INSERT INTO schema_version (version) VALUES (7)", [])
+                .map_err(|e| format!("Failed to record migration 7: {e}"))?;
+        }
+
         let storage = Self {
             conn: Mutex::new(conn),
         };
@@ -1902,6 +1938,7 @@ impl Storage {
     // --- Memory optimizer storage methods ---
 
     /// Create a new optimization run record. Returns the run ID.
+    /// Uses atomic INSERT...WHERE NOT EXISTS to prevent TOCTOU race.
     #[allow(dead_code)]
     pub fn create_optimization_run(
         &self,
@@ -1909,26 +1946,23 @@ impl Storage {
         trigger: &str,
     ) -> Result<i64, String> {
         let conn = self.conn.lock();
-        // Concurrency guard: only one running per project
-        let running: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM optimization_runs WHERE project_path = ?1 AND status = 'running'",
-                rusqlite::params![project_path],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("Failed to check running optimizations: {e}"))?;
-        if running > 0 {
+        let now = chrono::Utc::now().to_rfc3339();
+        // Atomic: insert only if no running run exists for this project
+        conn.execute(
+            "INSERT INTO optimization_runs (project_path, trigger, memories_scanned, suggestions_created, context_sources, status, started_at)
+             SELECT ?1, ?2, 0, 0, '{}', 'running', ?3
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM optimization_runs WHERE project_path = ?1 AND status = 'running'
+             )",
+            rusqlite::params![project_path, trigger, now],
+        )
+        .map_err(|e| format!("Failed to create optimization run: {e}"))?;
+
+        if conn.changes() == 0 {
             return Err(format!(
                 "An optimization is already running for {project_path}"
             ));
         }
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO optimization_runs (project_path, trigger, memories_scanned, suggestions_created, context_sources, status, started_at)
-             VALUES (?1, ?2, 0, 0, '{}', 'running', ?3)",
-            rusqlite::params![project_path, trigger, now],
-        )
-        .map_err(|e| format!("Failed to create optimization run: {e}"))?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -2008,47 +2042,68 @@ impl Storage {
         reasoning: &str,
         proposed_content: Option<&str>,
         merge_sources: Option<&str>,
+        original_content: Option<&str>,
+        diff_summary: Option<&str>,
+        backup_data: Option<&str>,
     ) -> Result<i64, String> {
         let conn = self.conn.lock();
         let now = chrono::Utc::now().to_rfc3339();
         conn.execute(
             "INSERT INTO optimization_suggestions
-             (run_id, project_path, action_type, target_file, reasoning, proposed_content, merge_sources, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8)",
-            rusqlite::params![run_id, project_path, action_type, target_file, reasoning, proposed_content, merge_sources, now],
+             (run_id, project_path, action_type, target_file, reasoning, proposed_content, merge_sources, status, created_at, original_content, diff_summary, backup_data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, ?11)",
+            rusqlite::params![run_id, project_path, action_type, target_file, reasoning, proposed_content, merge_sources, now, original_content, diff_summary, backup_data],
         )
         .map_err(|e| format!("Failed to store optimization suggestion: {e}"))?;
         Ok(conn.last_insert_rowid())
     }
 
-    /// Get optimization suggestions for a project, optionally filtered by run.
+    /// Get optimization suggestions for a project with pagination, optionally filtered by status.
     #[allow(dead_code)]
     pub fn get_optimization_suggestions(
         &self,
         project_path: &str,
-        run_id: Option<i64>,
+        status_filter: Option<&str>,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
         let conn = self.conn.lock();
-        let query = if run_id.is_some() {
-            "SELECT id, run_id, project_path, action_type, target_file, reasoning,
-                    proposed_content, merge_sources, status, error, resolved_at, created_at
-             FROM optimization_suggestions WHERE project_path = ?1 AND run_id = ?2
-             ORDER BY created_at ASC"
-        } else {
-            "SELECT id, run_id, project_path, action_type, target_file, reasoning,
-                    proposed_content, merge_sources, status, error, resolved_at, created_at
-             FROM optimization_suggestions WHERE project_path = ?1
-             ORDER BY created_at DESC"
-        };
-        let mut stmt = conn
-            .prepare_cached(query)
-            .map_err(|e| format!("Failed to prepare suggestions query: {e}"))?;
 
-        let params: Vec<Box<dyn rusqlite::types::ToSql>> = if let Some(rid) = run_id {
-            vec![Box::new(project_path.to_string()), Box::new(rid)]
-        } else {
-            vec![Box::new(project_path.to_string())]
-        };
+        let (query, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(status) = status_filter {
+                (
+                    "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                            proposed_content, merge_sources, status, error, resolved_at, created_at,
+                            original_content, diff_summary, backup_data
+                     FROM optimization_suggestions WHERE project_path = ?1 AND status = ?2
+                     ORDER BY created_at DESC LIMIT ?3 OFFSET ?4"
+                        .to_string(),
+                    vec![
+                        Box::new(project_path.to_string()),
+                        Box::new(status.to_string()),
+                        Box::new(limit),
+                        Box::new(offset),
+                    ],
+                )
+            } else {
+                (
+                    "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                            proposed_content, merge_sources, status, error, resolved_at, created_at,
+                            original_content, diff_summary, backup_data
+                     FROM optimization_suggestions WHERE project_path = ?1
+                     ORDER BY created_at DESC LIMIT ?2 OFFSET ?3"
+                        .to_string(),
+                    vec![
+                        Box::new(project_path.to_string()),
+                        Box::new(limit),
+                        Box::new(offset),
+                    ],
+                )
+            };
+
+        let mut stmt = conn
+            .prepare_cached(&query)
+            .map_err(|e| format!("Failed to prepare suggestions query: {e}"))?;
 
         let rows = stmt
             .query_map(rusqlite::params_from_iter(params.iter()), |row| {
@@ -2068,6 +2123,9 @@ impl Storage {
                     error: row.get(9)?,
                     resolved_at: row.get(10)?,
                     created_at: row.get(11)?,
+                    original_content: row.get(12)?,
+                    diff_summary: row.get(13)?,
+                    backup_data: row.get(14)?,
                 })
             })
             .map_err(|e| format!("Failed to query suggestions: {e}"))?;
@@ -2086,7 +2144,8 @@ impl Storage {
         let mut stmt = conn
             .prepare_cached(
                 "SELECT id, run_id, project_path, action_type, target_file, reasoning,
-                        proposed_content, merge_sources, status, error, resolved_at, created_at
+                        proposed_content, merge_sources, status, error, resolved_at, created_at,
+                        original_content, diff_summary, backup_data
                  FROM optimization_suggestions
                  WHERE project_path = ?1 AND status = 'denied'
                  ORDER BY resolved_at DESC LIMIT ?2",
@@ -2110,6 +2169,9 @@ impl Storage {
                     error: row.get(9)?,
                     resolved_at: row.get(10)?,
                     created_at: row.get(11)?,
+                    original_content: row.get(12)?,
+                    diff_summary: row.get(13)?,
+                    backup_data: row.get(14)?,
                 })
             })
             .map_err(|e| format!("Failed to query denied suggestions: {e}"))?;
@@ -2144,7 +2206,8 @@ impl Storage {
         let conn = self.conn.lock();
         conn.query_row(
             "SELECT id, run_id, project_path, action_type, target_file, reasoning,
-                    proposed_content, merge_sources, status, error, resolved_at, created_at
+                    proposed_content, merge_sources, status, error, resolved_at, created_at,
+                    original_content, diff_summary, backup_data
              FROM optimization_suggestions WHERE id = ?1",
             rusqlite::params![suggestion_id],
             |row| {
@@ -2164,6 +2227,9 @@ impl Storage {
                     error: row.get(9)?,
                     resolved_at: row.get(10)?,
                     created_at: row.get(11)?,
+                    original_content: row.get(12)?,
+                    diff_summary: row.get(13)?,
+                    backup_data: row.get(14)?,
                 })
             },
         )
@@ -2221,6 +2287,119 @@ impl Storage {
         )
         .map_err(|e| format!("Failed to delete suggestion: {e}"))?;
         Ok(())
+    }
+
+    /// Get all suggestions for a specific optimization run.
+    #[allow(dead_code)]
+    pub fn get_suggestions_for_run(
+        &self,
+        run_id: i64,
+    ) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, run_id, project_path, action_type, target_file, reasoning,
+                        proposed_content, merge_sources, status, error, resolved_at, created_at,
+                        original_content, diff_summary, backup_data
+                 FROM optimization_suggestions WHERE run_id = ?1
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|e| format!("Failed to prepare suggestions-for-run query: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![run_id], |row| {
+                let merge_sources_json: Option<String> = row.get(7)?;
+                let merge_sources: Option<Vec<String>> =
+                    merge_sources_json.and_then(|j| serde_json::from_str(&j).ok());
+                Ok(crate::models::OptimizationSuggestion {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    project_path: row.get(2)?,
+                    action_type: row.get(3)?,
+                    target_file: row.get(4)?,
+                    reasoning: row.get(5)?,
+                    proposed_content: row.get(6)?,
+                    merge_sources,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    resolved_at: row.get(10)?,
+                    created_at: row.get(11)?,
+                    original_content: row.get(12)?,
+                    diff_summary: row.get(13)?,
+                    backup_data: row.get(14)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query suggestions for run: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect suggestions for run: {e}"))
+    }
+
+    /// Clean up stale optimization suggestions:
+    /// - Expire pending/undone suggestions older than 14 days (set status to 'expired')
+    /// - Delete denied suggestions older than 90 days
+    /// - Clear original_content/backup_data from approved suggestions older than 30 days
+    #[allow(dead_code)]
+    pub fn cleanup_stale_suggestions(&self, project_path: &str) -> Result<(), String> {
+        let conn = self.conn.lock();
+        let now = Utc::now();
+        let expire_cutoff = (now - TimeDelta::days(14)).to_rfc3339();
+        let delete_cutoff = (now - TimeDelta::days(90)).to_rfc3339();
+        let clear_cutoff = (now - TimeDelta::days(30)).to_rfc3339();
+
+        // Expire pending/undone suggestions older than 14 days
+        conn.execute(
+            "UPDATE optimization_suggestions SET status = 'expired', resolved_at = datetime('now')
+             WHERE project_path = ?1 AND status IN ('pending', 'undone') AND created_at < ?2",
+            rusqlite::params![project_path, expire_cutoff],
+        )
+        .map_err(|e| format!("Failed to expire stale suggestions: {e}"))?;
+
+        // Delete denied suggestions older than 90 days
+        conn.execute(
+            "DELETE FROM optimization_suggestions
+             WHERE project_path = ?1 AND status = 'denied' AND resolved_at < ?2",
+            rusqlite::params![project_path, delete_cutoff],
+        )
+        .map_err(|e| format!("Failed to delete old denied suggestions: {e}"))?;
+
+        // Clear content from approved suggestions older than 30 days
+        conn.execute(
+            "UPDATE optimization_suggestions
+             SET original_content = NULL, backup_data = NULL
+             WHERE project_path = ?1 AND status = 'approved' AND resolved_at < ?2",
+            rusqlite::params![project_path, clear_cutoff],
+        )
+        .map_err(|e| format!("Failed to clear old approved suggestion content: {e}"))?;
+
+        Ok(())
+    }
+
+    /// Check if there's already a pending suggestion with the same action type and target file.
+    #[allow(dead_code)]
+    pub fn has_duplicate_pending(
+        &self,
+        project_path: &str,
+        action_type: &str,
+        target_file: Option<&str>,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock();
+        let count: i64 = if let Some(tf) = target_file {
+            conn.query_row(
+                "SELECT COUNT(*) FROM optimization_suggestions
+                 WHERE project_path = ?1 AND action_type = ?2 AND target_file = ?3 AND status = 'pending'",
+                rusqlite::params![project_path, action_type, tf],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to check duplicate pending: {e}"))?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM optimization_suggestions
+                 WHERE project_path = ?1 AND action_type = ?2 AND target_file IS NULL AND status = 'pending'",
+                rusqlite::params![project_path, action_type],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to check duplicate pending: {e}"))?
+        };
+        Ok(count > 0)
     }
 }
 

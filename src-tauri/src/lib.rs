@@ -350,10 +350,16 @@ async fn trigger_memory_optimization(
 #[tauri::command]
 async fn get_optimization_suggestions(
     project_path: String,
-    run_id: Option<i64>,
+    status_filter: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
 ) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
     let storage = get_storage()?;
-    run_blocking(move || storage.get_optimization_suggestions(&project_path, run_id))
+    let limit = limit.unwrap_or(200);
+    let offset = offset.unwrap_or(0);
+    run_blocking(move || {
+        storage.get_optimization_suggestions(&project_path, status_filter.as_deref(), limit, offset)
+    })
 }
 
 #[tauri::command]
@@ -371,7 +377,21 @@ async fn deny_suggestion(suggestion_id: i64) -> Result<(), String> {
 #[tauri::command]
 async fn undeny_suggestion(suggestion_id: i64) -> Result<(), String> {
     let storage = get_storage()?;
-    run_blocking(move || storage.delete_suggestion(suggestion_id))
+    run_blocking(move || storage.update_suggestion_status(suggestion_id, "pending", None))
+}
+
+#[tauri::command]
+async fn undo_suggestion(suggestion_id: i64, app: tauri::AppHandle) -> Result<(), String> {
+    let storage = get_storage()?;
+    run_blocking(move || memory_optimizer::undo_suggestion(storage, suggestion_id, &app))
+}
+
+#[tauri::command]
+async fn get_suggestions_for_run(
+    run_id: i64,
+) -> Result<Vec<crate::models::OptimizationSuggestion>, String> {
+    let storage = get_storage()?;
+    run_blocking(move || storage.get_suggestions_for_run(run_id))
 }
 
 #[tauri::command]
@@ -800,6 +820,8 @@ pub fn run() {
             approve_suggestion,
             deny_suggestion,
             undeny_suggestion,
+            undo_suggestion,
+            get_suggestions_for_run,
             get_optimization_runs,
             get_known_projects,
             add_custom_project,

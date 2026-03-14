@@ -40,6 +40,23 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 - Domain-grouped rules with confidence scores
 - Run history with real-time analysis logs
 
+### Memory optimizer
+- Scans your Claude Code memory files and suggests improvements (merge duplicates, update stale content, remove obsolete entries)
+- Approval-based workflow — review each suggestion with a diff preview before applying
+- Undo any applied change to restore the original file
+- Batched "optimize all" to review and apply suggestions across an entire project
+
+### MCP server
+- Gives Claude Code direct access to your indexed session history via MCP tools
+- **`search_history`** — full-text search across all sessions by content, edits, commands, or tool use
+- **`list_projects`** / **`list_sessions`** — browse projects and sessions
+- **`get_session_context`** — retrieve surrounding messages for a search hit
+- **`get_branch_activity`** — see all work done on a git branch
+- **`get_token_usage`** — query token usage and cost analytics
+- **`get_learned_rules`** — retrieve learned coding patterns
+- **`get_tool_details`** — inspect full tool input/output for a specific action
+- Automatically available when the Quill plugin is installed — no extra configuration needed
+
 ### Desktop integration
 - **System tray** with Show / Always on Top / Check for Update / Quit
 - **In-app updater** — checks on startup and every 4 hours; yellow "Update" button appears in the titlebar
@@ -312,6 +329,8 @@ src/                          # React frontend
     learning/
       StatusStrip.tsx         # Observation stats and sparkline
       RuleCard.tsx            # Individual learned rule display
+      SuggestionCard.tsx      # Memory optimization suggestion with diff view
+      MemoriesPanel.tsx       # Memory optimizer panel with approve/undo
       DomainBreakdown.tsx     # Rules grouped by domain
       RunHistory.tsx          # Past analysis run log
       FloatingRunsWindow.tsx  # Floating window for run history with live logs
@@ -328,6 +347,7 @@ src/                          # React frontend
     useBreakdownData.ts       # Fetches host/project/session breakdowns
     useTokenData.ts           # Fetches token history, stats, hostnames
     useLearningData.ts        # Fetches learning rules, runs, observations
+    useMemoryData.ts          # Fetches memory files, optimization runs, suggestions
     useToast.tsx              # Toast notification system
   utils/
     time.ts                   # Relative time formatting
@@ -345,7 +365,9 @@ src-tauri/                    # Rust backend
     config.rs                 # Credential loading (read-only)
     fetcher.rs                # Usage API calls
     learning.rs               # Learning analysis spawner
+    memory_optimizer.rs       # Memory file scanning, LLM analysis, and suggestion execution
     models.rs                 # Data models (usage buckets + token + learning types)
+    prompt_utils.rs           # Prompt sanitization utilities
     sessions.rs               # Tantivy full-text session search and indexing
     storage.rs                # SQLite storage with aggregation
     server.rs                 # axum HTTP server for token reporting
@@ -368,6 +390,14 @@ plugin/                       # Claude Code plugin (hook + setup/learn skills)
   commands/
     setup.md                  # Setup command documentation
     learn.md                  # Learn command documentation
+  mcp/
+    server.py                 # FastMCP server for session history tools
+    dependencies.py           # Lifespan and shared state
+    tools/
+      search.py               # search_history, get_session_context, get_branch_activity
+      discovery.py            # list_projects, list_sessions, get_session_overview
+      analytics.py            # get_token_usage, get_learned_rules
+      details.py              # get_tool_details
 hooks/                        # Standalone hook scripts (non-plugin)
   quill-hook.sh               # Standalone Stop hook
   install.sh                  # curl-pipe installer
@@ -375,19 +405,20 @@ hooks/                        # Standalone hook scripts (non-plugin)
 
 ## Releasing
 
-Releases are driven by git tags. The CI workflow (`.github/workflows/release.yml`) builds and publishes automatically.
+Releases are driven by git tags via `release.sh`. The CI workflow (`.github/workflows/release.yml`) builds and publishes automatically.
 
-1. Create and push a version tag:
-   ```bash
-   git tag v0.3.0
-   git push origin v0.3.0
-   ```
+```bash
+./release.sh bump patch    # v0.3.1 -> v0.3.2
+./release.sh bump minor    # v0.3.1 -> v0.4.0
+./release.sh retag          # Re-point latest tag to current HEAD
+./release.sh latest         # Show current version
+```
 
-2. The `tauri-action` patches the version in `tauri.conf.json` at build time using the tag, so the built binary always matches the tag version. You do not need to update `tauri.conf.json`, `package.json`, or `Cargo.toml` manually — the git tag is the single source of truth for the release version.
+`bump` and `retag` generate user-facing release notes via Claude, commit them as `release_notes.md`, then tag and push. The CI picks up the notes and applies them to the GitHub release.
 
-3. The workflow creates a draft GitHub release, builds for all platforms (Linux AppImage + .deb, macOS dmg for Intel + ARM, Windows nsis), then publishes the release.
+The `tauri-action` patches the version in `tauri.conf.json` at build time using the tag — you do not need to update version numbers manually. The workflow builds for all platforms (Linux AppImage + .deb, macOS dmg for Intel + ARM, Windows nsis), then publishes the release.
 
-4. The in-app updater checks the `latest.json` endpoint on GitHub Releases on startup and every 4 hours. When an update is found, a yellow "Update" button appears in the titlebar. Linux uses AppImage so updates install without sudo.
+The in-app updater checks `latest.json` on GitHub Releases on startup and every 4 hours. When an update is found, a yellow "Update" button appears in the titlebar.
 
 ## License
 

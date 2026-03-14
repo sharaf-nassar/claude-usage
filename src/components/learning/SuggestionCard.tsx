@@ -6,6 +6,7 @@ interface SuggestionCardProps {
   onApprove: (id: number) => void;
   onDeny: (id: number) => void;
   onUndeny?: (id: number) => void;
+  onUndo?: (id: number) => void;
 }
 
 const ACTION_COLORS: Record<string, string> = {
@@ -16,12 +17,51 @@ const ACTION_COLORS: Record<string, string> = {
   flag: "#EAB308",
 };
 
-export function SuggestionCard({ suggestion, onApprove, onDeny, onUndeny }: SuggestionCardProps) {
+function DiffView({ diff }: { diff: string }) {
+  return (
+    <pre className="learning-rule-content" style={{ fontSize: 10 }}>
+      {diff.split("\n").map((line, i) => {
+        let bg = "transparent";
+        let color = "rgba(255,255,255,0.7)";
+        if (line.startsWith("+") && !line.startsWith("+++")) {
+          bg = "rgba(34,197,94,0.12)";
+          color = "#22C55E";
+        } else if (line.startsWith("-") && !line.startsWith("---")) {
+          bg = "rgba(239,68,68,0.12)";
+          color = "#EF4444";
+        } else if (line.startsWith("@@")) {
+          color = "#3B82F6";
+        }
+        return (
+          <div key={i} style={{ background: bg, color, padding: "0 4px" }}>
+            {line}
+          </div>
+        );
+      })}
+    </pre>
+  );
+}
+
+export function SuggestionCard({
+  suggestion,
+  onApprove,
+  onDeny,
+  onUndeny,
+  onUndo,
+}: SuggestionCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [showFull, setShowFull] = useState(false);
   const color = ACTION_COLORS[suggestion.action_type] || "#888";
-  const isPending = suggestion.status === "pending";
+  const isPending =
+    suggestion.status === "pending" || suggestion.status === "undone";
   const isDenied = suggestion.status === "denied";
+  const isApproved = suggestion.status === "approved";
+  const isUndone = suggestion.status === "undone";
   const isFlag = suggestion.action_type === "flag";
+  const hasDiff = !!suggestion.diff_summary;
+  const hasOriginal = !!suggestion.original_content;
+  const canUndo =
+    isApproved && (hasOriginal || suggestion.action_type === "create");
 
   return (
     <div
@@ -35,7 +75,9 @@ export function SuggestionCard({ suggestion, onApprove, onDeny, onUndeny }: Sugg
         className="learning-rule-header"
         onClick={() => setExpanded(!expanded)}
       >
-        <span className="learning-rule-expand">{expanded ? "▾" : "▸"}</span>
+        <span className="learning-rule-expand">
+          {expanded ? "\u25BE" : "\u25B8"}
+        </span>
         <span
           style={{
             fontSize: 9,
@@ -56,7 +98,7 @@ export function SuggestionCard({ suggestion, onApprove, onDeny, onUndeny }: Sugg
         {suggestion.status !== "pending" && (
           <span
             className={`learning-rule-state learning-rule-state--${
-              suggestion.status === "approved" ? "confirmed" : "invalidated"
+              isApproved || isUndone ? "confirmed" : "invalidated"
             }`}
           >
             {suggestion.status}
@@ -66,13 +108,18 @@ export function SuggestionCard({ suggestion, onApprove, onDeny, onUndeny }: Sugg
           <span style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
             <button
               className="learning-analyze-btn"
-              style={{ borderColor: color, color, fontSize: 9, padding: "2px 8px" }}
+              style={{
+                borderColor: color,
+                color,
+                fontSize: 9,
+                padding: "2px 8px",
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 onApprove(suggestion.id);
               }}
             >
-              {isFlag ? "Dismiss" : "Approve"}
+              {isFlag ? "Dismiss" : isUndone ? "Re-approve" : "Approve"}
             </button>
             {!isFlag && (
               <button
@@ -87,6 +134,24 @@ export function SuggestionCard({ suggestion, onApprove, onDeny, onUndeny }: Sugg
               </button>
             )}
           </span>
+        )}
+        {canUndo && onUndo && (
+          <button
+            className="learning-analyze-btn"
+            style={{
+              borderColor: "#EAB308",
+              color: "#EAB308",
+              fontSize: 9,
+              padding: "2px 8px",
+              marginLeft: "auto",
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onUndo(suggestion.id);
+            }}
+          >
+            Undo
+          </button>
         )}
         {isDenied && onUndeny && (
           <button
@@ -113,14 +178,79 @@ export function SuggestionCard({ suggestion, onApprove, onDeny, onUndeny }: Sugg
           {suggestion.error}
         </div>
       )}
-      {expanded && suggestion.proposed_content && (
-        <pre className="learning-rule-content">{suggestion.proposed_content}</pre>
+      {expanded && hasDiff && !showFull && (
+        <>
+          <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+            <button
+              className="learning-analyze-btn"
+              style={{
+                fontSize: 8,
+                padding: "1px 6px",
+                borderColor: `${color}40`,
+                color,
+              }}
+              onClick={() => setShowFull(true)}
+            >
+              Full
+            </button>
+            <span
+              style={{
+                fontSize: 8,
+                color: "rgba(255,255,255,0.3)",
+                alignSelf: "center",
+              }}
+            >
+              Diff view
+            </span>
+          </div>
+          <DiffView diff={suggestion.diff_summary!} />
+        </>
       )}
-      {expanded && suggestion.merge_sources && suggestion.merge_sources.length > 0 && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "rgba(255,255,255,0.45)" }}>
-          Merging: {suggestion.merge_sources.join(", ")}
-        </div>
+      {expanded && (showFull || !hasDiff) && suggestion.proposed_content && (
+        <>
+          {hasDiff && (
+            <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+              <button
+                className="learning-analyze-btn"
+                style={{
+                  fontSize: 8,
+                  padding: "1px 6px",
+                  borderColor: `${color}40`,
+                  color,
+                }}
+                onClick={() => setShowFull(false)}
+              >
+                Diff
+              </button>
+              <span
+                style={{
+                  fontSize: 8,
+                  color: "rgba(255,255,255,0.3)",
+                  alignSelf: "center",
+                }}
+              >
+                Full view
+              </span>
+            </div>
+          )}
+          <pre className="learning-rule-content">
+            {suggestion.proposed_content}
+          </pre>
+        </>
       )}
+      {expanded &&
+        suggestion.merge_sources &&
+        suggestion.merge_sources.length > 0 && (
+          <div
+            style={{
+              marginTop: 4,
+              fontSize: 10,
+              color: "rgba(255,255,255,0.45)",
+            }}
+          >
+            Merging: {suggestion.merge_sources.join(", ")}
+          </div>
+        )}
     </div>
   );
 }

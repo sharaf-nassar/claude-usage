@@ -42,6 +42,50 @@ bump_version() {
   esac
 }
 
+generate_notes() {
+  local prev_tag="$1" new_tag="$2"
+
+  local range
+  if [[ -z "$prev_tag" ]]; then
+    range="HEAD"
+  else
+    range="${prev_tag}..HEAD"
+  fi
+
+  local commits diff_stat
+  commits=$(git log "$range" --pretty=format:"- %s" --no-merges)
+  diff_stat=$(git diff "${prev_tag:-$(git rev-list --max-parents=0 HEAD)}..HEAD" --stat)
+
+  local prompt
+  prompt=$(cat <<PROMPT
+You are writing release notes for Quill, a desktop companion app for Claude Code.
+
+Focus ONLY on new features and capabilities the user can see and interact with.
+For each feature, write a short heading and 1-2 sentences explaining what it does
+and how/when the user would use it. Write from the user's perspective ("You can
+now..." or "New X lets you...").
+
+OMIT entirely: bug fixes, refactors, dependency updates, CI changes, internal
+architecture changes, performance improvements, and anything the user wouldn't
+notice. If a commit is purely technical with no visible user impact, skip it.
+
+Output format — a flat list under a single "## What's New" heading. No sub-sections.
+If there are zero user-facing changes, output "Maintenance release — no user-facing changes."
+
+Version: ${new_tag}
+Previous version: ${prev_tag:-"(first release)"}
+
+Commits:
+${commits}
+
+Files changed:
+${diff_stat}
+PROMPT
+)
+
+  echo "$prompt" | claude -p --model haiku --output-format text --no-session-persistence 2>/dev/null
+}
+
 cmd_bump() {
   local part="${1:-}"
   if [[ -z "$part" || ! "$part" =~ ^(major|minor|patch)$ ]]; then
@@ -59,7 +103,16 @@ cmd_bump() {
 
   new_version=$(bump_version "$current" "$part")
   echo "Current version: ${current}"
-  echo "New version:     ${new_version}"
+  echo "New version:     v${new_version}"
+  echo ""
+
+  echo "Generating release notes..."
+  local notes
+  notes=$(generate_notes "$latest" "v${new_version}")
+  echo ""
+  echo "--- Release Notes ---"
+  echo "$notes"
+  echo "---------------------"
   echo ""
 
   read -rp "Create and push tag v${new_version}? [Y/n] " confirm
@@ -68,7 +121,7 @@ cmd_bump() {
     exit 0
   fi
 
-  git tag "v${new_version}"
+  git tag -a "v${new_version}" -m "$notes"
   git push origin "v${new_version}"
   echo "Pushed v${new_version} - CI release workflow will start automatically."
 }
@@ -94,8 +147,21 @@ cmd_retag() {
     exit 1
   fi
 
+  # Find the tag before this one for release notes range
+  local prev_tag
+  prev_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${tag}$" | head -n1)
+
   echo "This will re-point $tag to HEAD ($(git rev-parse --short HEAD))."
   echo "WARNING: This deletes the tag on the remote and re-pushes it."
+  echo ""
+
+  echo "Generating release notes..."
+  local notes
+  notes=$(generate_notes "$prev_tag" "$tag")
+  echo ""
+  echo "--- Release Notes ---"
+  echo "$notes"
+  echo "---------------------"
   echo ""
 
   read -rp "Continue? [Y/n] " confirm
@@ -105,7 +171,7 @@ cmd_retag() {
   fi
 
   git tag -d "$tag"
-  git tag "$tag"
+  git tag -a "$tag" -m "$notes"
   git push origin ":refs/tags/$tag"
   git push origin "$tag"
   echo "Re-tagged $tag to $(git rev-parse --short HEAD) locally and remotely."

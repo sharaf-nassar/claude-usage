@@ -391,6 +391,9 @@ pub struct OptimizationSuggestion {
     pub error: Option<String>,
     pub resolved_at: Option<String>,
     pub created_at: String,
+    pub original_content: Option<String>,
+    pub diff_summary: Option<String>,
+    pub backup_data: Option<String>,
 }
 
 /// An optimization run record returned to frontend

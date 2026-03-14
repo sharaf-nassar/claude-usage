@@ -405,12 +405,9 @@ pub async fn spawn_analysis(
 
     run_log!("Prompt size: {} chars", prompt.len());
 
-    // 5. Call Anthropic API via Rig — Haiku for micro-updates, Sonnet for full analysis
-    let model = if micro {
-        crate::ai_client::MODEL_HAIKU
-    } else {
-        crate::ai_client::MODEL_SONNET
-    };
+    // 5. Call Anthropic API via Rig — Haiku for all analysis
+    //    (Sonnet/Opus require CCR session ingress, unavailable via direct OAuth API)
+    let model = crate::ai_client::MODEL_HAIKU;
     run_log!("Invoking Anthropic API (model={model})");
 
     let analysis = crate::ai_client::analyze_observations(&prompt, model)

@@ -7,15 +7,59 @@ use crate::models::{
     ActionType, MemoryFile, MemoryFilesUpdatedEvent, MemoryOptimizerLogEvent,
     MemoryOptimizerUpdatedEvent, OptimizationOutput,
 };
-use crate::prompt_utils::{safe_truncate, sanitize_for_prompt};
+use crate::prompt_utils::{escape_for_prompt, safe_truncate};
 use crate::storage::Storage;
 
-/// Max chars per context section (~4 chars/token)
-const MEMORY_BUDGET_CHARS: usize = 600_000;
-const CLAUDEMD_BUDGET_CHARS: usize = 240_000;
-const RULES_BUDGET_CHARS: usize = 120_000;
-const INSTINCTS_BUDGET_CHARS: usize = 80_000;
 const MAX_DENIED: usize = 50;
+
+/// Total prompt budget in bytes (~1MB)
+const TOTAL_BUDGET_BYTES: usize = 1_040_000;
+const WEIGHT_MEMORY: f64 = 0.58;
+const WEIGHT_CLAUDEMD: f64 = 0.23;
+const WEIGHT_RULES: f64 = 0.12;
+const WEIGHT_INSTINCTS: f64 = 0.07;
+
+/// Compute dynamic budget allocation based on which sections have content.
+fn allocate_budgets(
+    has_memory: bool,
+    has_claude_md: bool,
+    has_rules: bool,
+    has_instincts: bool,
+) -> (usize, usize, usize, usize) {
+    let mut weights: Vec<(&str, f64)> = Vec::new();
+    if has_memory {
+        weights.push(("memory", WEIGHT_MEMORY));
+    }
+    if has_claude_md {
+        weights.push(("claude_md", WEIGHT_CLAUDEMD));
+    }
+    if has_rules {
+        weights.push(("rules", WEIGHT_RULES));
+    }
+    if has_instincts {
+        weights.push(("instincts", WEIGHT_INSTINCTS));
+    }
+
+    let total_weight: f64 = weights.iter().map(|(_, w)| w).sum();
+    if total_weight == 0.0 {
+        return (0, 0, 0, 0);
+    }
+
+    let budget_for = |key: &str| -> usize {
+        weights
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, w)| ((w / total_weight) * TOTAL_BUDGET_BYTES as f64) as usize)
+            .unwrap_or(0)
+    };
+
+    (
+        budget_for("memory"),
+        budget_for("claude_md"),
+        budget_for("rules"),
+        budget_for("instincts"),
+    )
+}
 
 /// Convert a project path to the Claude Code memory directory slug.
 fn project_path_to_slug(project_path: &str) -> String {
@@ -298,6 +342,15 @@ fn build_prompt(
     context: &GatheredContext,
     denied: &[crate::models::OptimizationSuggestion],
 ) -> String {
+    let has_memory = !memory_files.is_empty();
+    let has_claude_md =
+        !context.project_claude_md.is_empty() || !context.global_claude_md.is_empty();
+    let has_rules = !context.rules.is_empty();
+    let has_instincts = !context.instincts.is_empty();
+
+    let (memory_budget, claude_md_budget, rules_budget, instincts_budget) =
+        allocate_budgets(has_memory, has_claude_md, has_rules, has_instincts);
+
     let mut prompt = String::with_capacity(32_000);
 
     prompt.push_str(
@@ -308,60 +361,80 @@ fn build_prompt(
         "Your job is to analyze both and suggest improvements. All changes require user approval.\n\n",
     );
 
-    // Memories section
-    prompt.push_str("## Current Memory Files\n\n");
+    prompt.push_str("<context>\n");
+
+    // Memory files section
+    prompt.push_str("<memory-files>\n");
     if memory_files.is_empty() {
-        prompt.push_str("No memory files exist for this project.\n\n");
+        prompt.push_str("No memory files exist for this project.\n");
     } else {
+        let per_file_budget = memory_budget / memory_files.len().max(1);
         for mf in memory_files {
-            let sanitized = sanitize_for_prompt(&mf.content);
-            let content =
-                safe_truncate(&sanitized, MEMORY_BUDGET_CHARS / memory_files.len().max(1));
-            prompt.push_str(&format!("### File: {}\n{}\n\n", mf.file_name, content));
+            let escaped = escape_for_prompt(&mf.content);
+            let content = safe_truncate(&escaped, per_file_budget);
+            let mem_type = mf.memory_type.as_deref().unwrap_or("general");
+            let changed = mf.changed_since_last_run;
+            prompt.push_str(&format!(
+                "<file name=\"{}\" type=\"{}\" changed=\"{}\">{}</file>\n",
+                escape_for_prompt(&mf.file_name),
+                escape_for_prompt(mem_type),
+                changed,
+                content,
+            ));
         }
     }
+    prompt.push_str("</memory-files>\n");
 
-    // CLAUDE.md section
-    let mut claude_md_section = String::new();
-    if !context.project_claude_md.is_empty() {
-        claude_md_section.push_str("### Project CLAUDE.md (target_file: 'CLAUDE.md')\n");
-        claude_md_section.push_str(&sanitize_for_prompt(&context.project_claude_md));
-        claude_md_section.push('\n');
-    }
-    if !context.global_claude_md.is_empty() {
-        claude_md_section.push_str("### Global CLAUDE.md (target_file: '~/.claude/CLAUDE.md')\n");
-        claude_md_section.push_str(&sanitize_for_prompt(safe_truncate(
-            &context.global_claude_md,
-            CLAUDEMD_BUDGET_CHARS,
-        )));
-        claude_md_section.push('\n');
-    }
-    if !claude_md_section.is_empty() {
-        prompt.push_str("## CLAUDE.md Files (optimization targets — can suggest update/flag)\n\n");
-        prompt.push_str(&claude_md_section);
-        prompt.push('\n');
-    }
+    // CLAUDE.md files section
+    if has_claude_md {
+        prompt.push_str("<claude-md-files>\n");
 
-    if !context.rules.is_empty() {
-        prompt.push_str("## Existing Rules\n\n");
-        prompt.push_str(safe_truncate(
-            &sanitize_for_prompt(&context.rules),
-            RULES_BUDGET_CHARS,
-        ));
-        prompt.push_str("\n\n");
-    }
+        // Count non-empty CLAUDE.md files for budget splitting
+        let claude_md_count = [
+            !context.project_claude_md.is_empty(),
+            !context.global_claude_md.is_empty(),
+        ]
+        .iter()
+        .filter(|&&v| v)
+        .count();
+        let per_claude_budget = claude_md_budget / claude_md_count.max(1);
 
-    if !context.instincts.is_empty() {
-        prompt.push_str("## Learned Instincts\n\n");
-        prompt.push_str(safe_truncate(
-            &sanitize_for_prompt(&context.instincts),
-            INSTINCTS_BUDGET_CHARS,
-        ));
-        prompt.push_str("\n\n");
+        if !context.project_claude_md.is_empty() {
+            let escaped = escape_for_prompt(&context.project_claude_md);
+            let content = safe_truncate(&escaped, per_claude_budget);
+            prompt.push_str(&format!(
+                "<file name=\"CLAUDE.md\" scope=\"project\">{}</file>\n",
+                content,
+            ));
+        }
+        if !context.global_claude_md.is_empty() {
+            let escaped = escape_for_prompt(&context.global_claude_md);
+            let content = safe_truncate(&escaped, per_claude_budget);
+            prompt.push_str(&format!(
+                "<file name=\"~/.claude/CLAUDE.md\" scope=\"global\">{}</file>\n",
+                content,
+            ));
+        }
+        prompt.push_str("</claude-md-files>\n");
     }
 
+    // Rules section
+    if has_rules {
+        let escaped = escape_for_prompt(&context.rules);
+        let content = safe_truncate(&escaped, rules_budget);
+        prompt.push_str(&format!("<rules>{}</rules>\n", content));
+    }
+
+    // Instincts section
+    if has_instincts {
+        let escaped = escape_for_prompt(&context.instincts);
+        let content = safe_truncate(&escaped, instincts_budget);
+        prompt.push_str(&format!("<instincts>{}</instincts>\n", content));
+    }
+
+    // Denied suggestions section
     if !denied.is_empty() {
-        prompt.push_str("## Previously Denied Suggestions (DO NOT re-suggest similar actions)\n\n");
+        prompt.push_str("<denied-suggestions>\n");
         for (i, d) in denied.iter().take(MAX_DENIED).enumerate() {
             prompt.push_str(&format!(
                 "{}. {} on '{}': {}\n",
@@ -371,10 +444,13 @@ fn build_prompt(
                 d.reasoning
             ));
         }
-        prompt.push('\n');
+        prompt.push_str("</denied-suggestions>\n");
     }
 
-    prompt.push_str("## Your Task\n\n");
+    prompt.push_str("</context>\n\n");
+
+    // Task instructions
+    prompt.push_str("<task>\n");
     prompt.push_str(
         "Analyze the memory files and CLAUDE.md files above and suggest optimizations.\n\n",
     );
@@ -406,8 +482,24 @@ fn build_prompt(
     prompt.push_str(
         "Do NOT re-suggest actions similar to previously denied suggestions listed above.\n",
     );
+    prompt.push_str("</task>");
 
     prompt
+}
+
+/// Generate a unified diff between original and proposed content.
+fn generate_diff(original: &str, proposed: &str, filename: &str) -> String {
+    use similar::TextDiff;
+    let diff = TextDiff::from_lines(original, proposed);
+    let mut output = String::new();
+    for hunk in diff
+        .unified_diff()
+        .header(&format!("a/{filename}"), &format!("b/{filename}"))
+        .iter_hunks()
+    {
+        output.push_str(&hunk.to_string());
+    }
+    output
 }
 
 /// Main entry point: run memory optimization for a project.
@@ -437,6 +529,7 @@ pub async fn run_optimization_with_run(
     };
 
     emit_log("Scanning memory files...");
+    let _ = storage.cleanup_stale_suggestions(project_path);
     let memory_files = match scan_memory_files(storage, project_path) {
         Ok(files) => files,
         Err(e) => {
@@ -497,7 +590,7 @@ pub async fn run_optimization_with_run(
     emit_log("Calling Anthropic API for analysis...");
     let preamble = "You are a memory optimization assistant. Respond with structured JSON matching the provided schema.";
     let result: OptimizationOutput =
-        match ai_client::analyze_typed(&prompt, preamble, ai_client::MODEL_SONNET, 8192).await {
+        match ai_client::analyze_typed(&prompt, preamble, ai_client::MODEL_HAIKU, 8192).await {
             Ok(r) => r,
             Err(e) => {
                 let msg = format!("API analysis failed: {e}");
@@ -527,6 +620,7 @@ pub async fn run_optimization_with_run(
     ));
 
     // Store suggestions (with CLAUDE.md action type validation)
+    let mem_dir = memory_dir(project_path);
     for suggestion in &result.suggestions {
         let targets_claude_md = suggestion
             .target_file
@@ -561,6 +655,72 @@ pub async fn run_optimization_with_run(
             }),
             _ => suggestion.target_file.clone(),
         };
+
+        if storage
+            .has_duplicate_pending(
+                project_path,
+                &suggestion.action_type.to_string(),
+                target_file.as_deref(),
+            )
+            .unwrap_or(false)
+        {
+            log::info!(
+                "Skipping duplicate pending suggestion: {} on '{}'",
+                suggestion.action_type,
+                target_file.as_deref().unwrap_or("(new)")
+            );
+            continue;
+        }
+
+        let (original_content, diff_summary, backup_data) = match suggestion.action_type {
+            ActionType::Update => {
+                let current = read_target_file(project_path, target_file.as_deref(), &mem_dir);
+                let diff = current
+                    .as_ref()
+                    .zip(suggestion.proposed_content.as_ref())
+                    .map(|(orig, proposed)| {
+                        generate_diff(orig, proposed, target_file.as_deref().unwrap_or("file"))
+                    });
+                (current, diff, None)
+            }
+            ActionType::Delete => {
+                let current = read_target_file(project_path, target_file.as_deref(), &mem_dir);
+                (current, None, None)
+            }
+            ActionType::Merge => {
+                let sources = suggestion
+                    .merge_sources
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_default();
+                let mut backup_map = serde_json::Map::new();
+                for source in &sources {
+                    if let Some(content) = read_target_file(project_path, Some(source), &mem_dir) {
+                        backup_map.insert(source.clone(), serde_json::Value::String(content));
+                    }
+                }
+                let backup = if backup_map.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::Value::Object(backup_map).to_string())
+                };
+                let diff = suggestion.proposed_content.as_ref().map(|proposed| {
+                    let combined: String = sources
+                        .iter()
+                        .filter_map(|s| read_target_file(project_path, Some(s), &mem_dir))
+                        .collect::<Vec<_>>()
+                        .join("\n---\n");
+                    generate_diff(
+                        &combined,
+                        proposed,
+                        target_file.as_deref().unwrap_or("merged"),
+                    )
+                });
+                (None, diff, backup)
+            }
+            ActionType::Create | ActionType::Flag => (None, None, None),
+        };
+
         storage.store_optimization_suggestion(
             run_id,
             project_path,
@@ -569,6 +729,9 @@ pub async fn run_optimization_with_run(
             &suggestion.reasoning,
             suggestion.proposed_content.as_deref(),
             merge_sources_json.as_deref(),
+            original_content.as_deref(),
+            diff_summary.as_deref(),
+            backup_data.as_deref(),
         )?;
     }
 
@@ -593,6 +756,49 @@ pub async fn run_optimization_with_run(
     Ok(run_id)
 }
 
+/// Resolve a target file path with path traversal protection.
+/// CLAUDE.md targets get special handling; all others are validated
+/// to stay within the memory directory.
+fn resolve_target_path(
+    target: &str,
+    project_path: &str,
+    mem_dir: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if target == "CLAUDE.md" {
+        Ok(PathBuf::from(project_path).join("CLAUDE.md"))
+    } else if target.contains("/.claude/CLAUDE.md") || target == "~/.claude/CLAUDE.md" {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        Ok(PathBuf::from(home).join(".claude").join("CLAUDE.md"))
+    } else {
+        let resolved = mem_dir.join(target);
+        for component in resolved.components() {
+            if component == std::path::Component::ParentDir {
+                return Err(format!(
+                    "Path traversal detected: '{}' contains '..'",
+                    target
+                ));
+            }
+        }
+        let filename = resolved.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if !crate::prompt_utils::is_safe_memory_name(filename) {
+            return Err(format!("Unsafe filename in '{target}'"));
+        }
+        Ok(resolved)
+    }
+}
+
+/// Read a target file's content, resolving CLAUDE.md paths specially.
+/// Returns None if the file does not exist or is unreadable.
+fn read_target_file(
+    project_path: &str,
+    target: Option<&str>,
+    mem_dir: &std::path::Path,
+) -> Option<String> {
+    let target = target?;
+    let path = resolve_target_path(target, project_path, mem_dir).ok()?;
+    std::fs::read_to_string(path).ok()
+}
+
 /// Execute an approved suggestion — performs the filesystem operation.
 pub fn execute_suggestion(
     storage: &Storage,
@@ -613,27 +819,24 @@ pub fn execute_suggestion(
         .map(|f| f.ends_with("CLAUDE.md"))
         .unwrap_or(false);
 
-    // Resolve target path with path traversal protection for non-CLAUDE.md targets
-    let resolve_target_path = |target: &str| -> Result<PathBuf, String> {
-        if target == "CLAUDE.md" {
-            Ok(PathBuf::from(&suggestion.project_path).join("CLAUDE.md"))
-        } else if target.contains("/.claude/CLAUDE.md") || target == "~/.claude/CLAUDE.md" {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            Ok(PathBuf::from(home).join(".claude").join("CLAUDE.md"))
-        } else {
-            // Path containment check: ensure resolved path stays within mem_dir
-            let resolved = mem_dir.join(target);
-            let canonical_dir = mem_dir.canonicalize().unwrap_or_else(|_| mem_dir.clone());
-            let canonical_resolved = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
-            if !canonical_resolved.starts_with(&canonical_dir) {
-                return Err(format!(
-                    "Path traversal detected: '{}' resolves outside memory directory",
-                    target
-                ));
-            }
-            Ok(resolved)
+    // Staleness check: verify file hasn't changed since suggestion was created
+    if let Some(ref original) = suggestion.original_content
+        && let Some(ref target) = suggestion.target_file
+        && let Ok(path) = resolve_target_path(target, &suggestion.project_path, &mem_dir)
+        && path.exists()
+    {
+        let current = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        use sha2::Digest;
+        let orig_hash = format!("{:x}", sha2::Sha256::digest(original.as_bytes()));
+        let curr_hash = format!("{:x}", sha2::Sha256::digest(current.as_bytes()));
+        if orig_hash != curr_hash {
+            return Err(
+                "File has changed since this suggestion was generated — re-run optimization"
+                    .to_string(),
+            );
         }
-    };
+    }
 
     match suggestion.action_type.as_str() {
         "delete" => {
@@ -646,7 +849,7 @@ pub fn execute_suggestion(
                 .target_file
                 .as_ref()
                 .ok_or("Delete suggestion missing target_file")?;
-            let path = resolve_target_path(target)?;
+            let path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
             if path.exists() {
                 std::fs::remove_file(&path)
                     .map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
@@ -661,7 +864,7 @@ pub fn execute_suggestion(
                 .proposed_content
                 .as_ref()
                 .ok_or("Update suggestion missing proposed_content")?;
-            let path = resolve_target_path(target)?;
+            let path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
             std::fs::write(&path, content)
                 .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
         }
@@ -712,19 +915,20 @@ pub fn execute_suggestion(
                 .ok_or("Merge suggestion missing target_file (output name)")?;
 
             for source in &sources {
-                let source_path = resolve_target_path(source)?;
+                let source_path = resolve_target_path(source, &suggestion.project_path, &mem_dir)?;
                 if !source_path.exists() {
                     return Err(format!("Merge source missing: {source}"));
                 }
             }
 
-            let target_path = resolve_target_path(target)?;
+            let target_path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
             std::fs::write(&target_path, content)
                 .map_err(|e| format!("Failed to write merged file: {e}"))?;
 
             for source in &sources {
                 if source != target {
-                    let source_path = resolve_target_path(source)?;
+                    let source_path =
+                        resolve_target_path(source, &suggestion.project_path, &mem_dir)?;
                     if source_path.exists() {
                         std::fs::remove_file(&source_path)
                             .map_err(|e| format!("Failed to delete merge source {source}: {e}"))?;
@@ -763,9 +967,12 @@ pub fn execute_suggestion(
             "delete" => {
                 if memory_md_exists {
                     let target = suggestion.target_file.as_deref().unwrap_or("");
+                    let link_pattern =
+                        regex::Regex::new(&format!(r"\[.*?\]\({}\)", regex::escape(target)))
+                            .unwrap();
                     let updated: String = current_memory_md
                         .lines()
-                        .filter(|line| !line.contains(target))
+                        .filter(|line| !link_pattern.is_match(line))
                         .collect::<Vec<_>>()
                         .join("\n");
                     if updated != current_memory_md {
@@ -810,9 +1017,15 @@ pub fn execute_suggestion(
                 let sources = suggestion.merge_sources.clone().unwrap_or_default();
                 let target = suggestion.target_file.as_deref().unwrap_or("");
                 if memory_md_exists {
+                    let patterns: Vec<regex::Regex> = sources
+                        .iter()
+                        .map(|s| {
+                            regex::Regex::new(&format!(r"\[.*?\]\({}\)", regex::escape(s))).unwrap()
+                        })
+                        .collect();
                     let mut updated: String = current_memory_md
                         .lines()
-                        .filter(|line| !sources.iter().any(|s| line.contains(s.as_str())))
+                        .filter(|line| !patterns.iter().any(|p| p.is_match(line)))
                         .collect::<Vec<_>>()
                         .join("\n");
                     updated.push_str(&format!("\n- [{}]({}) — Merged memory", target, target));
@@ -840,9 +1053,119 @@ pub fn execute_suggestion(
                 &reasoning,
                 Some(&proposed),
                 None,
+                None,
+                None,
+                None,
             );
         }
     }
+
+    Ok(())
+}
+
+/// Undo an approved suggestion — reverses the filesystem operation.
+pub fn undo_suggestion(
+    storage: &Storage,
+    suggestion_id: i64,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    let suggestion = storage.get_suggestion_by_id(suggestion_id)?;
+
+    if suggestion.status != "approved" {
+        return Err(format!(
+            "Can only undo approved suggestions, this one is '{}'",
+            suggestion.status
+        ));
+    }
+
+    let mem_dir = memory_dir(&suggestion.project_path);
+
+    match suggestion.action_type.as_str() {
+        "delete" => {
+            let content = suggestion
+                .original_content
+                .as_ref()
+                .ok_or("Cannot undo delete: no backup content stored")?;
+            let target = suggestion
+                .target_file
+                .as_ref()
+                .ok_or("Cannot undo delete: no target file")?;
+            let path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
+            if !mem_dir.exists() {
+                std::fs::create_dir_all(&mem_dir)
+                    .map_err(|e| format!("Failed to create memory dir: {e}"))?;
+            }
+            std::fs::write(&path, content)
+                .map_err(|e| format!("Failed to recreate {}: {e}", path.display()))?;
+        }
+        "update" => {
+            let content = suggestion
+                .original_content
+                .as_ref()
+                .ok_or("Cannot undo update: no backup content stored")?;
+            let target = suggestion
+                .target_file
+                .as_ref()
+                .ok_or("Cannot undo update: no target file")?;
+            let path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
+            std::fs::write(&path, content)
+                .map_err(|e| format!("Failed to restore {}: {e}", path.display()))?;
+        }
+        "create" => {
+            let target = suggestion
+                .target_file
+                .as_ref()
+                .ok_or("Cannot undo create: no target file")?;
+            let path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
+            if path.exists() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
+            }
+        }
+        "merge" => {
+            let backup_json = suggestion
+                .backup_data
+                .as_ref()
+                .ok_or("Cannot undo merge: no backup data stored")?;
+            let backup: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(backup_json)
+                    .map_err(|e| format!("Failed to parse merge backup: {e}"))?;
+
+            // Delete the merged target file
+            if let Some(target) = &suggestion.target_file {
+                let path = resolve_target_path(target, &suggestion.project_path, &mem_dir)?;
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .map_err(|e| format!("Failed to delete merged file: {e}"))?;
+                }
+            }
+
+            // Recreate each source file (validate paths via resolve_target_path)
+            for (filename, content_val) in &backup {
+                let content = content_val
+                    .as_str()
+                    .ok_or_else(|| format!("Invalid backup content for {filename}"))?;
+                let path = resolve_target_path(filename, &suggestion.project_path, &mem_dir)?;
+                std::fs::write(&path, content)
+                    .map_err(|e| format!("Failed to recreate {filename}: {e}"))?;
+            }
+        }
+        "flag" => {
+            // No filesystem change to undo
+        }
+        other => {
+            return Err(format!("Cannot undo unknown action type: {other}"));
+        }
+    }
+
+    storage.update_suggestion_status(suggestion_id, "undone", None)?;
+
+    let _ = app.emit(
+        "memory-files-updated",
+        MemoryFilesUpdatedEvent {
+            project_path: suggestion.project_path.clone(),
+        },
+    );
 
     Ok(())
 }
