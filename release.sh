@@ -60,17 +60,18 @@ generate_notes() {
   prompt=$(cat <<PROMPT
 You are writing release notes for Quill, a desktop companion app for Claude Code.
 
-Focus ONLY on new features and capabilities the user can see and interact with.
-For each feature, write a short heading and 1-2 sentences explaining what it does
-and how/when the user would use it. Write from the user's perspective ("You can
-now..." or "New X lets you...").
+Focus ONLY on new features and capabilities that are visible in the app.
+For each feature, write a bold heading and 1-2 sentences describing what it does.
+Write directly about the feature, not from the user's perspective — avoid "you can",
+"your", "lets you". Example: "Review and approve suggestions with a diff preview"
+not "You can now review and approve suggestions".
 
 OMIT entirely: bug fixes, refactors, dependency updates, CI changes, internal
-architecture changes, performance improvements, and anything the user wouldn't
-notice. If a commit is purely technical with no visible user impact, skip it.
+architecture changes, performance improvements, and anything not visible in the app.
+If a commit is purely technical with no visible impact, skip it.
 
 Output format — a flat list under a single "## What's New" heading. No sub-sections.
-If there are zero user-facing changes, output "Maintenance release — no user-facing changes."
+If there are zero visible changes, output "Maintenance release — no user-facing changes."
 
 Version: ${new_tag}
 Previous version: ${prev_tag:-"(first release)"}
@@ -121,7 +122,9 @@ cmd_bump() {
     exit 0
   fi
 
-  git tag -a "v${new_version}" -m "$notes"
+  git tag -a "v${new_version}" -m "Release v${new_version}
+
+${notes}"
   git push origin "v${new_version}"
   echo "Pushed v${new_version} - CI release workflow will start automatically."
 }
@@ -171,7 +174,9 @@ cmd_retag() {
   fi
 
   git tag -d "$tag"
-  git tag -a "$tag" -m "$notes"
+  git tag -a "$tag" -m "Release ${tag}
+
+${notes}"
   git push origin ":refs/tags/$tag"
   git push origin "$tag"
   echo "Re-tagged $tag to $(git rev-parse --short HEAD) locally and remotely."

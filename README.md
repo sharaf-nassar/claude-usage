@@ -75,15 +75,15 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
     <td align="center"><strong>Learning</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/live-view.png" width="280" alt="Live usage view with progress bars and token sparkline" /></td>
-    <td><img src="docs/screenshots/analytics-view.png" width="320" alt="Analytics view with usage chart and host breakdown" /></td>
-    <td><img src="docs/screenshots/learning-panel.png" width="280" alt="Learning panel with rules, confidence scores, and domains" /></td>
+    <td><img src="screenshots/live-view.png" width="280" alt="Live usage view with progress bars and token sparkline" /></td>
+    <td><img src="screenshots/analytics-view.png" width="320" alt="Analytics view with usage chart and host breakdown" /></td>
+    <td><img src="screenshots/learning-panel.png" width="280" alt="Learning panel with rules, confidence scores, and domains" /></td>
   </tr>
 </table>
 
 <p align="center">
   <strong>Session search</strong><br/>
-  <img src="docs/screenshots/session-search.png" width="300" alt="Session search with filters and highlighted results" />
+  <img src="screenshots/session-search.png" width="300" alt="Session search with filters and highlighted results" />
 </p>
 
 ## Architecture
