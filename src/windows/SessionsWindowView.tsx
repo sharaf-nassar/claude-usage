@@ -1,9 +1,10 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import SearchBar from "../components/sessions/SearchBar";
 import FilterBar from "../components/sessions/FilterBar";
 import ResultCard from "../components/sessions/ResultCard";
+import { useSessionCodeStats } from "../hooks/useSessionCodeStats";
 import type {
   SearchFilters,
   SearchResults,
@@ -17,6 +18,11 @@ const PAGE_SIZE = 20;
 
 function SessionsWindowView() {
   const [results, setResults] = useState<SearchHit[]>([]);
+  const sessionIds = useMemo(
+    () => [...new Set(results.map((r) => r.session_id))],
+    [results],
+  );
+  const locStatsMap = useSessionCodeStats(sessionIds);
   const [totalHits, setTotalHits] = useState(0);
   const [queryTimeMs, setQueryTimeMs] = useState(0);
   const [facets, setFacets] = useState<SearchFacets>({
@@ -175,6 +181,7 @@ function SessionsWindowView() {
             hit={hit}
             expanded={expandedHit === hit.message_id}
             context={context[hit.message_id] ?? null}
+            locStats={locStatsMap[hit.session_id] ?? null}
             onToggle={() => handleExpand(hit)}
           />
         ))}
