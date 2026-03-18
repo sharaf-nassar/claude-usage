@@ -1,6 +1,223 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { useMemoryData } from "../../hooks/useMemoryData";
 import { SuggestionCard } from "./SuggestionCard";
+
+const STYLES = {
+  selectorRow: {
+    display: "flex",
+    gap: 4,
+    alignItems: "center",
+    marginTop: 6,
+  } as CSSProperties,
+  select: {
+    flex: 1,
+    background: "#1e1e24",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 4,
+    color: "#d4d4d4",
+    fontSize: 11,
+    padding: "3px 6px",
+  } as CSSProperties,
+  managePanel: {
+    marginTop: 4,
+    padding: 6,
+    background: "#1e1e24",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 6,
+  } as CSSProperties,
+  showEmptyLabel: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 10,
+    color: "rgba(255,255,255,0.5)",
+    cursor: "pointer",
+    marginBottom: 6,
+  } as CSSProperties,
+  deleteConfirmRow: {
+    display: "flex",
+    gap: 4,
+    alignItems: "center",
+    fontSize: 10,
+  } as CSSProperties,
+  deleteConfirmLabel: { color: "#EF4444" } as CSSProperties,
+  deleteConfirmBtn: {
+    borderColor: "#EF4444",
+    color: "#EF4444",
+    fontSize: 9,
+    padding: "2px 8px",
+  } as CSSProperties,
+  cancelBtn: { fontSize: 10, color: "#888" } as CSSProperties,
+  deleteAllBtn: {
+    borderColor: "rgba(239,68,68,0.4)",
+    color: "#EF4444",
+    fontSize: 9,
+    padding: "2px 8px",
+    width: "100%",
+  } as CSSProperties,
+  customProjectsHeader: {
+    fontSize: 9,
+    color: "rgba(255,255,255,0.4)",
+    marginBottom: 4,
+  } as CSSProperties,
+  customProjectRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    fontSize: 10,
+    padding: "2px 0",
+  } as CSSProperties,
+  customProjectName: { flex: 1, color: "#d4d4d4" } as CSSProperties,
+  addProjectRow: { display: "flex", gap: 4, marginTop: 4 } as CSSProperties,
+  addProjectInput: {
+    flex: 1,
+    background: "#121216",
+    border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: 3,
+    color: "#d4d4d4",
+    fontSize: 10,
+    padding: "2px 4px",
+  } as CSSProperties,
+  addBtn: { fontSize: 9, padding: "2px 6px" } as CSSProperties,
+  manageCogBtn: { fontSize: 11 } as CSSProperties,
+  optimizeAllBtn: {
+    fontSize: 9,
+    padding: "2px 8px",
+    whiteSpace: "nowrap",
+  } as CSSProperties,
+  tabBtnBase: { fontSize: 10 } as CSSProperties,
+  fileConfirmBar: {
+    display: "flex",
+    gap: 4,
+    alignItems: "center",
+    fontSize: 10,
+    padding: "4px 8px",
+    marginBottom: 3,
+    background: "rgba(239,68,68,0.08)",
+    border: "1px solid rgba(239,68,68,0.2)",
+    borderRadius: 6,
+  } as CSSProperties,
+  fileConfirmLabel: { color: "#EF4444", flex: 1 } as CSSProperties,
+  optimizeRow: {
+    display: "flex",
+    gap: 4,
+    alignItems: "center",
+    marginTop: 6,
+  } as CSSProperties,
+  logsArea: { marginTop: 4 } as CSSProperties,
+  sectionHeaderClickable: { cursor: "pointer" } as CSSProperties,
+  deleteAllDeleteMb: { marginBottom: 6 } as CSSProperties,
+} as const;
+
+const TYPE_COLORS: Record<string, string> = {
+  user: "#3B82F6",
+  feedback: "#EF4444",
+  project: "#22C55E",
+  reference: "#EAB308",
+  "claude-md": "#A855F7",
+};
+
+const CHANGED_STYLE: CSSProperties = {
+  fontSize: 9,
+  color: "#EAB308",
+  fontWeight: 600,
+};
+
+function typeBadgeStyle(type: string): CSSProperties {
+  const color = TYPE_COLORS[type] || "#888";
+  return {
+    fontSize: 9,
+    padding: "1px 5px",
+    borderRadius: 3,
+    background: `${color}20`,
+    color,
+    textTransform: "uppercase",
+    fontWeight: 600,
+  };
+}
+
+import type { MemoryFile } from "../../hooks/useMemoryData";
+
+interface MemoryFileCardProps {
+  file: MemoryFile;
+  expanded: boolean;
+  onToggle: (fp: string) => void;
+  onDelete: (path: string, name: string) => void;
+}
+
+function MemoryFileCard({ file: mf, expanded, onToggle, onDelete }: MemoryFileCardProps) {
+  return (
+    <div className="learning-rule-card">
+      <div
+        className="learning-rule-header"
+        onClick={() => onToggle(mf.file_path)}
+      >
+        <span className="learning-rule-expand">
+          {expanded ? "▾" : "▸"}
+        </span>
+        <span className="learning-rule-name">{mf.file_name}</span>
+        {mf.memory_type && (
+          <span style={typeBadgeStyle(mf.memory_type)}>
+            {mf.memory_type}
+          </span>
+        )}
+        {mf.changed_since_last_run && (
+          <span style={CHANGED_STYLE}>changed</span>
+        )}
+        <button
+          className="learning-rule-delete"
+          title="Delete memory file"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(mf.file_path, mf.file_name);
+          }}
+        >
+          x
+        </button>
+      </div>
+      {mf.description && (
+        <span className="learning-rule-domain">{mf.description}</span>
+      )}
+      {expanded && (
+        <pre className="learning-rule-content">{mf.content}</pre>
+      )}
+    </div>
+  );
+}
+
+const CLAUDE_MD_BADGE_STYLE = typeBadgeStyle("claude-md");
+
+interface ClaudeMdCardProps {
+  file: MemoryFile;
+  expanded: boolean;
+  onToggle: (fp: string) => void;
+}
+
+function ClaudeMdCard({ file: mf, expanded, onToggle }: ClaudeMdCardProps) {
+  return (
+    <div className="learning-rule-card">
+      <div
+        className="learning-rule-header"
+        onClick={() => onToggle(mf.file_path)}
+      >
+        <span className="learning-rule-expand">
+          {expanded ? "▾" : "▸"}
+        </span>
+        <span className="learning-rule-name">{mf.file_name}</span>
+        <span style={CLAUDE_MD_BADGE_STYLE}>CLAUDE.MD</span>
+        {mf.changed_since_last_run && (
+          <span style={CHANGED_STYLE}>changed</span>
+        )}
+      </div>
+      {mf.description && (
+        <span className="learning-rule-domain">{mf.description}</span>
+      )}
+      {expanded && (
+        <pre className="learning-rule-content">{mf.content}</pre>
+      )}
+    </div>
+  );
+}
 
 export function MemoriesPanel() {
   const {
@@ -71,30 +288,14 @@ export function MemoriesPanel() {
     });
   };
 
-  const TYPE_COLORS: Record<string, string> = {
-    user: "#3B82F6",
-    feedback: "#EF4444",
-    project: "#22C55E",
-    reference: "#EAB308",
-    "claude-md": "#A855F7",
-  };
-
   return (
     <div>
       {/* Project selector row */}
-      <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 6 }}>
+      <div style={STYLES.selectorRow}>
         <select
           value={selectedProject}
           onChange={(e) => setSelectedProject(e.target.value)}
-          style={{
-            flex: 1,
-            background: "#1e1e24",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 4,
-            color: "#d4d4d4",
-            fontSize: 11,
-            padding: "3px 6px",
-          }}
+          style={STYLES.select}
         >
           {visibleProjects.map((p) => (
             <option key={p.path} value={p.path}>
@@ -106,13 +307,13 @@ export function MemoriesPanel() {
           className="learning-cog-btn"
           onClick={() => setShowManage(!showManage)}
           title="Manage projects"
-          style={{ fontSize: 11 }}
+          style={STYLES.manageCogBtn}
         >
           {showManage ? "−" : "+"}
         </button>
         <button
           className="learning-analyze-btn"
-          style={{ fontSize: 9, padding: "2px 8px", whiteSpace: "nowrap" }}
+          style={STYLES.optimizeAllBtn}
           disabled={optimizing || projectsWithMemories.length === 0}
           onClick={triggerOptimizeAll}
         >
@@ -122,59 +323,28 @@ export function MemoriesPanel() {
 
       {/* Manage panel */}
       {showManage && (
-        <div
-          style={{
-            marginTop: 4,
-            padding: 6,
-            background: "#1e1e24",
-            border: "1px solid rgba(255,255,255,0.1)",
-            borderRadius: 6,
-          }}
-        >
+        <div style={STYLES.managePanel}>
           {/* Show empty toggle */}
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 10,
-              color: "rgba(255,255,255,0.5)",
-              cursor: "pointer",
-              marginBottom: 6,
-            }}
-          >
+          <label style={STYLES.showEmptyLabel}>
             <input
               type="checkbox"
               checked={showEmpty}
               onChange={(e) => setShowEmpty(e.target.checked)}
-              style={{ accentColor: "#22C55E" }}
             />
             Show projects with no memories
           </label>
 
           {/* Delete all memories for selected project */}
           {selectedProject && actualMemoryFiles.length > 0 && (
-            <div style={{ marginBottom: 6 }}>
+            <div style={STYLES.deleteAllDeleteMb}>
               {confirmDelete?.type === "project" && confirmDelete.path === selectedProject ? (
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 4,
-                    alignItems: "center",
-                    fontSize: 10,
-                  }}
-                >
-                  <span style={{ color: "#EF4444" }}>
+                <div style={STYLES.deleteConfirmRow}>
+                  <span style={STYLES.deleteConfirmLabel}>
                     Delete all {actualMemoryFiles.length} memories?
                   </span>
                   <button
                     className="learning-analyze-btn"
-                    style={{
-                      borderColor: "#EF4444",
-                      color: "#EF4444",
-                      fontSize: 9,
-                      padding: "2px 8px",
-                    }}
+                    style={STYLES.deleteConfirmBtn}
                     onClick={() => {
                       deleteProjectMemories(selectedProject);
                       setConfirmDelete(null);
@@ -184,7 +354,7 @@ export function MemoriesPanel() {
                   </button>
                   <button
                     className="learning-rule-delete"
-                    style={{ fontSize: 10, color: "#888" }}
+                    style={STYLES.cancelBtn}
                     onClick={() => setConfirmDelete(null)}
                   >
                     Cancel
@@ -193,13 +363,7 @@ export function MemoriesPanel() {
               ) : (
                 <button
                   className="learning-analyze-btn"
-                  style={{
-                    borderColor: "rgba(239,68,68,0.4)",
-                    color: "#EF4444",
-                    fontSize: 9,
-                    padding: "2px 8px",
-                    width: "100%",
-                  }}
+                  style={STYLES.deleteAllBtn}
                   onClick={() => setConfirmDelete({ type: "project", path: selectedProject })}
                 >
                   Delete all memories for this project
@@ -208,29 +372,14 @@ export function MemoriesPanel() {
             </div>
           )}
 
-          <div
-            style={{
-              fontSize: 9,
-              color: "rgba(255,255,255,0.4)",
-              marginBottom: 4,
-            }}
-          >
+          <div style={STYLES.customProjectsHeader}>
             CUSTOM PROJECTS
           </div>
           {projects
             .filter((p) => p.is_custom)
             .map((p) => (
-              <div
-                key={p.path}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 10,
-                  padding: "2px 0",
-                }}
-              >
-                <span style={{ flex: 1, color: "#d4d4d4" }}>{p.path}</span>
+              <div key={p.path} style={STYLES.customProjectRow}>
+                <span style={STYLES.customProjectName}>{p.path}</span>
                 <button
                   className="learning-rule-delete"
                   onClick={() => removeCustomProject(p.path)}
@@ -239,20 +388,12 @@ export function MemoriesPanel() {
                 </button>
               </div>
             ))}
-          <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+          <div style={STYLES.addProjectRow}>
             <input
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
               placeholder="/path/to/project"
-              style={{
-                flex: 1,
-                background: "#121216",
-                border: "1px solid rgba(255,255,255,0.15)",
-                borderRadius: 3,
-                color: "#d4d4d4",
-                fontSize: 10,
-                padding: "2px 4px",
-              }}
+              style={STYLES.addProjectInput}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && newPath.trim()) {
                   addCustomProject(newPath.trim());
@@ -262,7 +403,7 @@ export function MemoriesPanel() {
             />
             <button
               className="learning-analyze-btn"
-              style={{ fontSize: 9, padding: "2px 6px" }}
+              style={STYLES.addBtn}
               onClick={() => {
                 if (newPath.trim()) {
                   addCustomProject(newPath.trim());
@@ -289,30 +430,13 @@ export function MemoriesPanel() {
               </span>
             </div>
             {confirmDelete?.type === "file" && (
-              <div
-                style={{
-                  display: "flex",
-                  gap: 4,
-                  alignItems: "center",
-                  fontSize: 10,
-                  padding: "4px 8px",
-                  marginBottom: 3,
-                  background: "rgba(239,68,68,0.08)",
-                  border: "1px solid rgba(239,68,68,0.2)",
-                  borderRadius: 6,
-                }}
-              >
-                <span style={{ color: "#EF4444", flex: 1 }}>
+              <div style={STYLES.fileConfirmBar}>
+                <span style={STYLES.fileConfirmLabel}>
                   Delete {confirmDelete.name}?
                 </span>
                 <button
                   className="learning-analyze-btn"
-                  style={{
-                    borderColor: "#EF4444",
-                    color: "#EF4444",
-                    fontSize: 9,
-                    padding: "2px 8px",
-                  }}
+                  style={STYLES.deleteConfirmBtn}
                   onClick={() => {
                     deleteMemoryFile(confirmDelete.path);
                     setConfirmDelete(null);
@@ -322,7 +446,7 @@ export function MemoriesPanel() {
                 </button>
                 <button
                   className="learning-rule-delete"
-                  style={{ fontSize: 10, color: "#888" }}
+                  style={STYLES.cancelBtn}
                   onClick={() => setConfirmDelete(null)}
                 >
                   Cancel
@@ -335,61 +459,15 @@ export function MemoriesPanel() {
               </div>
             ) : (
               actualMemoryFiles.map((mf) => (
-                <div key={mf.file_path} className="learning-rule-card">
-                  <div
-                    className="learning-rule-header"
-                    onClick={() => toggleFile(mf.file_path)}
-                  >
-                    <span className="learning-rule-expand">
-                      {expandedFiles.has(mf.file_path) ? "▾" : "▸"}
-                    </span>
-                    <span className="learning-rule-name">{mf.file_name}</span>
-                    {mf.memory_type && (
-                      <span
-                        style={{
-                          fontSize: 9,
-                          padding: "1px 5px",
-                          borderRadius: 3,
-                          background: `${TYPE_COLORS[mf.memory_type] || "#888"}20`,
-                          color: TYPE_COLORS[mf.memory_type] || "#888",
-                          textTransform: "uppercase",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {mf.memory_type}
-                      </span>
-                    )}
-                    {mf.changed_since_last_run && (
-                      <span
-                        style={{
-                          fontSize: 9,
-                          color: "#EAB308",
-                          fontWeight: 600,
-                        }}
-                      >
-                        changed
-                      </span>
-                    )}
-                    <button
-                      className="learning-rule-delete"
-                      title="Delete memory file"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmDelete({ type: "file", path: mf.file_path, name: mf.file_name });
-                      }}
-                    >
-                      x
-                    </button>
-                  </div>
-                  {mf.description && (
-                    <span className="learning-rule-domain">
-                      {mf.description}
-                    </span>
-                  )}
-                  {expandedFiles.has(mf.file_path) && (
-                    <pre className="learning-rule-content">{mf.content}</pre>
-                  )}
-                </div>
+                <MemoryFileCard
+                  key={mf.file_path}
+                  file={mf}
+                  expanded={expandedFiles.has(mf.file_path)}
+                  onToggle={toggleFile}
+                  onDelete={(path, name) =>
+                    setConfirmDelete({ type: "file", path, name })
+                  }
+                />
               ))
             )}
           </div>
@@ -404,62 +482,18 @@ export function MemoriesPanel() {
                 </span>
               </div>
               {claudeMdFiles.map((mf) => (
-                <div key={mf.file_path} className="learning-rule-card">
-                  <div
-                    className="learning-rule-header"
-                    onClick={() => toggleFile(mf.file_path)}
-                  >
-                    <span className="learning-rule-expand">
-                      {expandedFiles.has(mf.file_path) ? "▾" : "▸"}
-                    </span>
-                    <span className="learning-rule-name">{mf.file_name}</span>
-                    <span
-                      style={{
-                        fontSize: 9,
-                        padding: "1px 5px",
-                        borderRadius: 3,
-                        background: `${TYPE_COLORS["claude-md"]}20`,
-                        color: TYPE_COLORS["claude-md"],
-                        textTransform: "uppercase",
-                        fontWeight: 600,
-                      }}
-                    >
-                      CLAUDE.MD
-                    </span>
-                    {mf.changed_since_last_run && (
-                      <span
-                        style={{
-                          fontSize: 9,
-                          color: "#EAB308",
-                          fontWeight: 600,
-                        }}
-                      >
-                        changed
-                      </span>
-                    )}
-                  </div>
-                  {mf.description && (
-                    <span className="learning-rule-domain">
-                      {mf.description}
-                    </span>
-                  )}
-                  {expandedFiles.has(mf.file_path) && (
-                    <pre className="learning-rule-content">{mf.content}</pre>
-                  )}
-                </div>
+                <ClaudeMdCard
+                  key={mf.file_path}
+                  file={mf}
+                  expanded={expandedFiles.has(mf.file_path)}
+                  onToggle={toggleFile}
+                />
               ))}
             </div>
           )}
 
           {/* Optimize buttons + logs */}
-          <div
-            style={{
-              display: "flex",
-              gap: 4,
-              alignItems: "center",
-              marginTop: 6,
-            }}
-          >
+          <div style={STYLES.optimizeRow}>
             <button
               className="learning-analyze-btn"
               disabled={optimizing || !selectedProject}
@@ -480,7 +514,7 @@ export function MemoriesPanel() {
 
           {/* Live logs during optimization */}
           {optimizing && logs.length > 0 && (
-            <div className="learning-run-detail-logs" style={{ marginTop: 4 }}>
+            <div className="learning-run-detail-logs" style={STYLES.logsArea}>
               {logs.join("\n")}
             </div>
           )}
@@ -511,7 +545,7 @@ export function MemoriesPanel() {
             <div className="learning-section">
               <div
                 className="learning-section-header"
-                style={{ cursor: "pointer" }}
+                style={STYLES.sectionHeaderClickable}
                 onClick={() => setShowDenied(!showDenied)}
               >
                 {showDenied ? "▾" : "▸"} DENIED
@@ -538,7 +572,7 @@ export function MemoriesPanel() {
             <div className="learning-section">
               <div
                 className="learning-section-header"
-                style={{ cursor: "pointer" }}
+                style={STYLES.sectionHeaderClickable}
                 onClick={() => setShowApproved(!showApproved)}
               >
                 {showApproved ? "▾" : "▸"} APPROVED

@@ -1,0 +1,102 @@
+<h2>Charts Tab Layout</h2>
+<p class="subtitle">How should 4 charts be arranged in the cockpit view?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>2×2 Grid — Equal Weight</h3>
+      <p>All four charts in a balanced grid. Each gets equal space. Classic dashboard cockpit — scan everything at a glance.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:12px;text-align:center;">
+          <div style="color:#8884d8;font-size:11px;font-weight:600;margin-bottom:4px;">UTILIZATION %</div>
+          <div style="height:40px;background:linear-gradient(90deg,#1a1a2e 0%,#2a1a3e 50%,#3a2a4e 100%);border-radius:3px;display:flex;align-items:flex-end;padding:0 4px;">
+            <div style="width:100%;height:60%;background:linear-gradient(0deg,rgba(136,132,216,0.3),rgba(136,132,216,0.05));border-top:2px solid #8884d8;border-radius:2px 2px 0 0;"></div>
+          </div>
+        </div>
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:12px;text-align:center;">
+          <div style="color:#82ca9d;font-size:11px;font-weight:600;margin-bottom:4px;">TOKEN BREAKDOWN</div>
+          <div style="height:40px;background:linear-gradient(90deg,#1a1a2e 0%,#1a2e1a 50%,#2a3e2a 100%);border-radius:3px;display:flex;align-items:flex-end;padding:0 4px;gap:2px;">
+            <div style="flex:1;height:70%;background:rgba(130,202,157,0.4);border-radius:2px 2px 0 0;"></div>
+            <div style="flex:1;height:50%;background:rgba(130,202,157,0.25);border-radius:2px 2px 0 0;"></div>
+            <div style="flex:1;height:80%;background:rgba(130,202,157,0.4);border-radius:2px 2px 0 0;"></div>
+          </div>
+        </div>
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:12px;text-align:center;">
+          <div style="color:#ffc658;font-size:11px;font-weight:600;margin-bottom:4px;">CODE CHANGES</div>
+          <div style="height:40px;background:linear-gradient(90deg,#1a1a2e 0%,#2e2a1a 50%,#3e3a2a 100%);border-radius:3px;display:flex;align-items:flex-end;padding:0 4px;gap:2px;">
+            <div style="flex:1;height:55%;background:rgba(255,198,88,0.3);border-radius:2px 2px 0 0;"></div>
+            <div style="flex:1;height:35%;background:rgba(255,100,100,0.3);border-radius:2px 2px 0 0;"></div>
+          </div>
+        </div>
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:12px;text-align:center;">
+          <div style="color:#ff7c7c;font-size:11px;font-weight:600;margin-bottom:4px;">CACHE EFFICIENCY</div>
+          <div style="height:40px;background:linear-gradient(90deg,#1a1a2e 0%,#2e1a1a 50%,#3e2a2a 100%);border-radius:3px;display:flex;align-items:flex-end;padding:0 4px;">
+            <div style="width:100%;height:50%;background:linear-gradient(0deg,rgba(255,124,124,0.3),rgba(255,124,124,0.05));border-top:2px solid #ff7c7c;border-radius:2px 2px 0 0;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Hero + Row — Primary Focus</h3>
+      <p>Utilization chart gets hero placement (full width, tall). Three supporting charts in a row below at ~1/3 height. Prioritizes the metric you check most.</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px;">
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:12px;text-align:center;">
+          <div style="color:#8884d8;font-size:11px;font-weight:600;margin-bottom:4px;">UTILIZATION %</div>
+          <div style="height:50px;background:linear-gradient(90deg,#1a1a2e 0%,#2a1a3e 50%,#3a2a4e 100%);border-radius:3px;display:flex;align-items:flex-end;padding:0 4px;">
+            <div style="width:100%;height:65%;background:linear-gradient(0deg,rgba(136,132,216,0.3),rgba(136,132,216,0.05));border-top:2px solid #8884d8;border-radius:2px 2px 0 0;"></div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+          <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;text-align:center;">
+            <div style="color:#82ca9d;font-size:10px;font-weight:600;">TOKENS</div>
+            <div style="height:24px;background:#1a2e1a;border-radius:3px;margin-top:4px;"></div>
+          </div>
+          <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;text-align:center;">
+            <div style="color:#ffc658;font-size:10px;font-weight:600;">CODE</div>
+            <div style="height:24px;background:#2e2a1a;border-radius:3px;margin-top:4px;"></div>
+          </div>
+          <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px;text-align:center;">
+            <div style="color:#ff7c7c;font-size:10px;font-weight:600;">CACHE</div>
+            <div style="height:24px;background:#2e1a1a;border-radius:3px;margin-top:4px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Vertical Stack — Scrollable</h3>
+      <p>All four charts stacked full-width, each ~200px tall. Maximizes horizontal resolution for time series. You scroll to see them all — like a monitoring dashboard.</p>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px;">
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:12px;">
+          <div style="color:#8884d8;font-size:10px;font-weight:600;width:80px;">UTILIZATION</div>
+          <div style="flex:1;height:20px;background:linear-gradient(90deg,#1a1a2e,#2a1a3e,#3a2a4e);border-radius:3px;"></div>
+        </div>
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:12px;">
+          <div style="color:#82ca9d;font-size:10px;font-weight:600;width:80px;">TOKENS</div>
+          <div style="flex:1;height:20px;background:linear-gradient(90deg,#1a1a2e,#1a2e1a,#2a3e2a);border-radius:3px;"></div>
+        </div>
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:12px;">
+          <div style="color:#ffc658;font-size:10px;font-weight:600;width:80px;">CODE</div>
+          <div style="flex:1;height:20px;background:linear-gradient(90deg,#1a1a2e,#2e2a1a,#3e3a2a);border-radius:3px;"></div>
+        </div>
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:8px 12px;display:flex;align-items:center;gap:12px;">
+          <div style="color:#ff7c7c;font-size:10px;font-weight:600;width:80px;">CACHE</div>
+          <div style="flex:1;height:20px;background:linear-gradient(90deg,#1a1a2e,#2e1a1a,#3e2a2a);border-radius:3px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:24px;padding:16px;background:rgba(136,132,216,0.08);border:1px solid rgba(136,132,216,0.2);border-radius:8px;">
+  <h3 style="margin:0 0 8px 0;color:#8884d8;">My recommendation: A (2×2 Grid)</h3>
+  <p style="margin:0;color:#999;font-size:14px;">Best cockpit metaphor. All metrics visible without scrolling. Each chart gets its own axis scale without confusion. The grid scales well in a Tauri window sidebar panel. Option B creates a false hierarchy, and C wastes vertical space on 4 charts that share the same time axis.</p>
+</div>

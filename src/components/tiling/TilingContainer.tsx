@@ -123,13 +123,15 @@ export default function TilingContainer({
 	const makeShiftDragHandler = useCallback(
 		(depth: number, direction: "horizontal" | "vertical", ownPath: number[]) =>
 			(delta: number) => {
+				const pathsEqual = (a: number[], b: number[]) =>
+					a.length === b.length && a.every((v, i) => v === b[i]);
+				const pathKey = (p: number[]) => p.join(",");
+
 				const paths = collectSplitsAtDepth(layoutRef.current, depth, direction);
-				const siblingPaths = paths.filter(
-					(p) => JSON.stringify(p) !== JSON.stringify(ownPath),
-				);
+				const siblingPaths = paths.filter((p) => !pathsEqual(p, ownPath));
 
 				for (const path of siblingPaths) {
-					const key = JSON.stringify(path);
+					const key = pathKey(path);
 					if (!siblingOriginalRatios.current.has(key)) {
 						const ratio = getRatioAtPath(layoutRef.current, path);
 						if (ratio !== null) {
@@ -140,7 +142,7 @@ export default function TilingContainer({
 
 				let newTree = layoutRef.current;
 				for (const path of siblingPaths) {
-					const key = JSON.stringify(path);
+					const key = pathKey(path);
 					const original = siblingOriginalRatios.current.get(key);
 					if (original !== undefined) {
 						newTree = updateRatioAtPath(newTree, path, original + delta);

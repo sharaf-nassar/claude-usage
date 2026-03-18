@@ -29,14 +29,8 @@ interface UsageDisplayProps {
 function UsageDisplay({ data, timeMode, onTimeModeChange }: UsageDisplayProps) {
   const [open, setOpen] = useState(false);
   const [focusIdx, setFocusIdx] = useState(-1);
-  const [tick, setTick] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 10_000);
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -159,7 +153,6 @@ function UsageDisplay({ data, timeMode, onTimeModeChange }: UsageDisplayProps) {
           resetsAt={bucket.resets_at}
           timeMode={timeMode}
           showTokenSparkline={i === 0}
-          tick={tick}
         />
       ))}
     </div>

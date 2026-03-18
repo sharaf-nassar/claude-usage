@@ -6,12 +6,14 @@ export function useCodeStats(range: RangeType) {
 	const [stats, setStats] = useState<CodeStats | null>(null);
 	const [history, setHistory] = useState<CodeStatsHistoryPoint[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState<string | null>(null);
 	const initialLoadDone = useRef(false);
 
 	const fetchData = useCallback(async () => {
 		if (!initialLoadDone.current) {
 			setLoading(true);
 		}
+		setError(null);
 
 		try {
 			const [statsData, historyData] = await Promise.all([
@@ -22,6 +24,7 @@ export function useCodeStats(range: RangeType) {
 			setHistory(historyData);
 		} catch (e) {
 			console.error("Code stats fetch error:", e);
+			setError(String(e));
 		} finally {
 			setLoading(false);
 			initialLoadDone.current = true;
@@ -38,5 +41,5 @@ export function useCodeStats(range: RangeType) {
 		return () => clearInterval(interval);
 	}, [fetchData]);
 
-	return { stats, history, loading, refresh: fetchData };
+	return { stats, history, loading, error, refresh: fetchData };
 }

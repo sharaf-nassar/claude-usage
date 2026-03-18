@@ -34,47 +34,17 @@ const DAYS_TO_RANGE: Record<number, RangeType> = {
 
 const BREAKDOWN_COLLAPSED_KEY = "quill-breakdown-collapsed";
 
-interface BucketDropdownProps {
-	value: string;
-	options: string[];
-	onChange: (value: string) => void;
-}
-
-function BucketDropdown({ value, options, onChange }: BucketDropdownProps) {
-	const [open, setOpen] = useState(false);
-
-	return (
-		<div className="bucket-dropdown-wrap">
-			<button
-				className="bucket-dropdown-trigger"
-				onClick={() => setOpen((v) => !v)}
-				aria-haspopup="listbox"
-				aria-expanded={open}
-				aria-label={`Select bucket: ${value}`}
-			>
-				{value}
-				<span className="bucket-dropdown-arrow">&#9662;</span>
-			</button>
-			{open && (
-				<div className="bucket-dropdown-menu" role="listbox" aria-label="Usage buckets">
-					{options.map((opt) => (
-						<button
-							key={opt}
-							className={`bucket-dropdown-item${opt === value ? " active" : ""}`}
-							role="option"
-							aria-selected={opt === value}
-							onClick={() => {
-								onChange(opt);
-								setOpen(false);
-							}}
-						>
-							{opt}
-						</button>
-					))}
-				</div>
-			)}
-		</div>
-	);
+/** Parse a bucket label like "5 hours" or "7 days" into hours for weighting */
+function parseBucketHours(label: string): number {
+	const match = label.match(/(\d+)\s*(hour|day|week|month)/i);
+	if (!match) return 1;
+	const num = parseInt(match[1], 10);
+	const unit = match[2].toLowerCase();
+	if (unit.startsWith("hour")) return num;
+	if (unit.startsWith("day")) return num * 24;
+	if (unit.startsWith("week")) return num * 168;
+	if (unit.startsWith("month")) return num * 720;
+	return 1;
 }
 
 interface NowTabProps {
@@ -84,9 +54,7 @@ interface NowTabProps {
 }
 
 function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
-	const [selectedBucket, setSelectedBucket] = useState(
-		() => currentBuckets?.[0]?.label ?? "7 days",
-	);
+	const defaultBucket = currentBuckets?.[0]?.label ?? "7 days";
 	const [breakdownSelection, setBreakdownSelection] =
 		useState<BreakdownSelection | null>(null);
 	const [breakdownCollapsed, setBreakdownCollapsed] = useState(() => {
@@ -109,10 +77,27 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 	const stableBuckets = useMemo(() => currentBuckets, [bucketsKey]);
 
 	const { stats, loading, error } = useAnalyticsData(
-		selectedBucket,
+		defaultBucket,
 		range,
 		stableBuckets,
 	);
+
+	// Weighted average utilization across all buckets (weighted by window duration)
+	const weightedUtil = useMemo(() => {
+		if (!currentBuckets || currentBuckets.length === 0) return null;
+		let totalWeight = 0;
+		let weightedSum = 0;
+		for (const b of currentBuckets) {
+			const hours = parseBucketHours(b.label);
+			weightedSum += b.utilization * hours;
+			totalWeight += hours;
+		}
+		return totalWeight > 0 ? weightedSum / totalWeight : null;
+	}, [currentBuckets]);
+
+	const peakUtil = currentBuckets?.length > 0
+		? Math.max(...currentBuckets.map((b) => b.utilization))
+		: 0;
 
 	const tokenHostname =
 		breakdownSelection?.type === "host" ? breakdownSelection.key : null;
@@ -147,11 +132,6 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 						</button>
 					))}
 				</div>
-				<BucketDropdown
-					value={selectedBucket}
-					options={(currentBuckets ?? []).map((b) => b.label)}
-					onChange={setSelectedBucket}
-				/>
 			</div>
 
 			{error && (
@@ -200,13 +180,13 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 						<InsightCard
 							label="Rate Limit"
 							value={
-								stats
-									? `${stats.avg.toFixed(0)}%`
+								weightedUtil !== null
+									? `${weightedUtil.toFixed(0)}%`
 									: null
 							}
 							subtitle={
-								stats
-									? `peak ${stats.max.toFixed(0)}% \u00b7 ${Math.round(stats.time_above_80)}m above 80%`
+								weightedUtil !== null
+									? `peak ${peakUtil.toFixed(0)}%${stats ? ` \u00b7 ${Math.round(stats.time_above_80)}m above 80%` : ""}`
 									: "no data"
 							}
 							trend={
@@ -219,10 +199,10 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 									: null
 							}
 							accentColor={
-								stats
-									? stats.avg >= 80
+								weightedUtil !== null
+									? weightedUtil >= 80
 										? "#f87171"
-										: stats.avg >= 50
+										: weightedUtil >= 50
 											? "#fbbf24"
 											: "#34d399"
 									: "#8b949e"

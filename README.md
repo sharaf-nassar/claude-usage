@@ -104,36 +104,58 @@ graph LR
     subgraph Sources [" "]
         Claude(["Local Claude Code"])
         Remote(["Remote Hosts"])
-        API(["Anthropic API"])
-        GH(["GitHub Releases"])
     end
 
-    Claude -- "&ensp;tokens&ensp;" --> Backend
-    Remote -. "&ensp;tokens · over network&ensp;" .-> Backend
+    subgraph PluginBox [" Claude Code Plugin "]
+        Hooks(["Hook Scripts"])
+        MCP(["MCP Server"])
+    end
+
+    Claude -- "&ensp;hooks&ensp;" --> Hooks
+    Remote -. "&ensp;hooks · over network&ensp;" .-> Hooks
+    Claude <-->|"&ensp;MCP protocol&ensp;"| MCP
+
+    Hooks -- "&ensp;tokens · observations · sessions&ensp;" --> Backend
+    MCP -- "&ensp;queries&ensp;" --> Backend
+
+    API(["Anthropic API"])
+    GH(["GitHub Releases"])
+
     API -- "&ensp;usage · every 60s&ensp;" --> Backend
+    Backend -. "&ensp;LLM analysis&ensp;" .-> API
     GH -- "&ensp;update check&ensp;" --> Frontend
 
     subgraph Widget [" Tauri Desktop App "]
         Frontend(["React Frontend"]) <-->|"&ensp;Tauri IPC&ensp;"| Backend(["Rust Backend"])
         Backend <--> SQLite[(SQLite)]
+        Backend <--> Tantivy[(Tantivy)]
     end
 
     style Claude fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px
     style Remote fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px,stroke-dasharray: 5 5
+    style Hooks fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px
+    style MCP fill:#14b8a6,stroke:#2dd4bf,color:#fff,stroke-width:2px
     style API fill:#f59e0b,stroke:#fbbf24,color:#000,stroke-width:2px
     style GH fill:#10b981,stroke:#34d399,color:#000,stroke-width:2px
     style Frontend fill:#3b82f6,stroke:#60a5fa,color:#fff,stroke-width:2px
     style Backend fill:#ef4444,stroke:#f87171,color:#fff,stroke-width:2px
     style SQLite fill:#a855f7,stroke:#c084fc,color:#fff,stroke-width:2px
+    style Tantivy fill:#ec4899,stroke:#f472b6,color:#fff,stroke-width:2px
     style Widget fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style PluginBox fill:#1e293b,stroke:#475569,color:#e2e8f0
     style Sources fill:transparent,stroke:transparent
 
     linkStyle 0 stroke:#818cf8,stroke-width:2px
     linkStyle 1 stroke:#818cf8,stroke-width:2px,stroke-dasharray: 5 5
-    linkStyle 2 stroke:#f59e0b,stroke-width:2px
-    linkStyle 3 stroke:#10b981,stroke-width:2px
-    linkStyle 4 stroke:#60a5fa,stroke-width:2px
-    linkStyle 5 stroke:#c084fc,stroke-width:2px
+    linkStyle 2 stroke:#2dd4bf,stroke-width:2px
+    linkStyle 3 stroke:#818cf8,stroke-width:2px
+    linkStyle 4 stroke:#2dd4bf,stroke-width:2px
+    linkStyle 5 stroke:#f59e0b,stroke-width:2px
+    linkStyle 6 stroke:#f59e0b,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 7 stroke:#10b981,stroke-width:2px
+    linkStyle 8 stroke:#60a5fa,stroke-width:2px
+    linkStyle 9 stroke:#c084fc,stroke-width:2px
+    linkStyle 10 stroke:#f472b6,stroke-width:2px
 ```
 
 ## Prerequisites

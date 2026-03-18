@@ -1,0 +1,157 @@
+<h2>Analytics — Split Layout</h2>
+<p class="subtitle">Stats panel on the left, chart on the right. Current inline stats move into the left panel alongside new LOC metrics.</p>
+
+<div style="background: #0d1117; border-radius: 12px; padding: 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e6edf3; max-width: 900px; margin: 24px auto;">
+
+  <!-- Controls bar -->
+  <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+    <div style="display: flex; gap: 2px; background: rgba(255,255,255,0.06); border-radius: 6px; padding: 2px;">
+      <span style="padding: 4px 10px; font-size: 11px; color: #8b949e; cursor: pointer;">1H</span>
+      <span style="padding: 4px 10px; font-size: 11px; background: rgba(255,255,255,0.1); border-radius: 4px; color: #e6edf3; cursor: pointer;">24H</span>
+      <span style="padding: 4px 10px; font-size: 11px; color: #8b949e; cursor: pointer;">7D</span>
+      <span style="padding: 4px 10px; font-size: 11px; color: #8b949e; cursor: pointer;">30D</span>
+    </div>
+    <div style="flex: 1;"></div>
+    <div style="font-size: 11px; color: #8b949e; background: rgba(255,255,255,0.06); padding: 4px 10px; border-radius: 6px;">5 hours ▾</div>
+  </div>
+
+  <!-- Title -->
+  <div style="font-size: 11px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">5 Hours Usage</div>
+
+  <!-- Split: stats left, chart right -->
+  <div style="display: flex; gap: 16px;">
+
+    <!-- LEFT: Stats Panel -->
+    <div style="flex: 0 0 200px; display: flex; flex-direction: column; gap: 16px;">
+
+      <!-- Usage Stats -->
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+        <div style="font-size: 9px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Rate Limit</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Avg</div>
+            <div style="font-size: 16px; font-weight: 600; color: #22c55e;">2.2%</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Peak</div>
+            <div style="font-size: 16px; font-weight: 600; color: #22c55e;">6.0%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Token Stats -->
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+        <div style="font-size: 9px; font-weight: 600; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Tokens</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">In</div>
+            <div style="font-size: 16px; font-weight: 600; color: #e6edf3;">4.0k</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Out</div>
+            <div style="font-size: 16px; font-weight: 600; color: #e6edf3;">93.1k</div>
+          </div>
+          <div style="grid-column: span 2;">
+            <div style="font-size: 9px; color: #8b949e;">Cache Hit</div>
+            <div style="font-size: 16px; font-weight: 600; color: #22c55e;">100%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LOC Stats (NEW) -->
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(139,92,246,0.2); border-radius: 8px; padding: 12px;">
+        <div style="font-size: 9px; font-weight: 600; color: #a78bfa; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;">Code Changes</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Added</div>
+            <div style="font-size: 16px; font-weight: 600; color: #22c55e;">+1,247</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Removed</div>
+            <div style="font-size: 16px; font-weight: 600; color: #f87171;">-382</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Net</div>
+            <div style="font-size: 16px; font-weight: 600; color: #22c55e;">+865</div>
+          </div>
+          <div>
+            <div style="font-size: 9px; color: #8b949e;">Avg/Session</div>
+            <div style="font-size: 16px; font-weight: 600; color: #e6edf3;">108</div>
+          </div>
+        </div>
+
+        <!-- Language breakdown -->
+        <div style="margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
+          <div style="font-size: 9px; color: #8b949e; margin-bottom: 6px;">By Language</div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <div style="width: 8px; height: 8px; border-radius: 2px; background: #3178c6;"></div>
+              <span style="font-size: 10px; color: #e6edf3; flex: 1;">TypeScript</span>
+              <span style="font-size: 10px; color: #8b949e;">62%</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <div style="width: 8px; height: 8px; border-radius: 2px; background: #dea584;"></div>
+              <span style="font-size: 10px; color: #e6edf3; flex: 1;">Rust</span>
+              <span style="font-size: 10px; color: #8b949e;">28%</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <div style="width: 8px; height: 8px; border-radius: 2px; background: #563d7c;"></div>
+              <span style="font-size: 10px; color: #e6edf3; flex: 1;">CSS</span>
+              <span style="font-size: 10px; color: #8b949e;">10%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: Chart -->
+    <div style="flex: 1; min-width: 0;">
+      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px; height: 280px; position: relative;">
+        <!-- Y axis labels -->
+        <div style="position: absolute; left: 8px; top: 12px; font-size: 9px; color: rgba(255,255,255,0.2);">100%</div>
+        <div style="position: absolute; left: 8px; top: 75px; font-size: 9px; color: rgba(255,255,255,0.2);">75%</div>
+        <div style="position: absolute; left: 8px; top: 138px; font-size: 9px; color: rgba(255,255,255,0.2);">50%</div>
+        <div style="position: absolute; left: 8px; top: 201px; font-size: 9px; color: rgba(255,255,255,0.2);">25%</div>
+
+        <!-- Right Y axis -->
+        <div style="position: absolute; right: 8px; top: 12px; font-size: 9px; color: rgba(96,165,250,0.4);">395.2k</div>
+        <div style="position: absolute; right: 8px; top: 138px; font-size: 9px; color: rgba(96,165,250,0.4);">200.0k</div>
+        <div style="position: absolute; right: 8px; bottom: 30px; font-size: 9px; color: rgba(96,165,250,0.4);">0</div>
+
+        <!-- Grid lines -->
+        <div style="position: absolute; left: 40px; right: 50px; top: 80px; border-top: 1px dashed rgba(248,113,113,0.3);"></div>
+        <div style="position: absolute; left: 40px; right: 50px; top: 143px; border-top: 1px dashed rgba(251,191,36,0.2);"></div>
+
+        <!-- Fake chart area using SVG -->
+        <svg style="position: absolute; left: 40px; right: 50px; top: 12px; bottom: 26px; width: calc(100% - 90px); height: calc(100% - 38px);" viewBox="0 0 500 240" preserveAspectRatio="none">
+          <!-- Usage line (green/blue) -->
+          <defs>
+            <linearGradient id="usageGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stop-color="#34d399" stop-opacity="0.15"/>
+              <stop offset="95%" stop-color="#34d399" stop-opacity="0.01"/>
+            </linearGradient>
+          </defs>
+          <path d="M0,230 L20,230 L40,228 L60,120 L80,110 L100,115 L120,105 L140,110 L160,50 L180,55 L200,48 L220,52 L240,115 L260,120 L280,125 L300,50 L320,45 L340,48 L360,52 L380,120 L400,125 L420,115 L440,70 L460,75 L480,80 L500,85"
+                fill="url(#usageGrad)" stroke="#34d399" stroke-width="2" fill-opacity="1"/>
+          <!-- Token line (blue) -->
+          <path d="M0,235 L60,220 L120,200 L160,80 L200,100 L240,180 L300,60 L340,120 L380,190 L440,140 L500,170"
+                fill="none" stroke="#60a5fa" stroke-width="1.5" opacity="0.6"/>
+        </svg>
+
+        <!-- X axis labels -->
+        <div style="position: absolute; bottom: 8px; left: 40px; right: 50px; display: flex; justify-content: space-between;">
+          <span style="font-size: 9px; color: rgba(255,255,255,0.2);">01:30 AM</span>
+          <span style="font-size: 9px; color: rgba(255,255,255,0.2);">04:21 AM</span>
+          <span style="font-size: 9px; color: rgba(255,255,255,0.2);">08:30 AM</span>
+          <span style="font-size: 9px; color: rgba(255,255,255,0.2);">11:21 AM</span>
+          <span style="font-size: 9px; color: rgba(255,255,255,0.2);">08:18 PM</span>
+          <span style="font-size: 9px; color: rgba(255,255,255,0.2);">01:08 AM</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top: 16px; font-size: 13px;">The purple-bordered "Code Changes" card is the new LOC section. Existing stats (Rate Limit, Tokens) move from the inline bar into stacked cards on the left.</p>

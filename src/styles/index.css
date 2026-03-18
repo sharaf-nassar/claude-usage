@@ -2038,3 +2038,96 @@ html.tiling-panel-dragging .tile-leaf-content {
   from { opacity: 1; transform: translateY(0); }
   to   { opacity: 0; transform: translateY(-8px); }
 }
+
+/* ─── Charts tab: synchronized stack ─── */
+.charts-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	flex: 1;
+	min-height: 0;
+	position: relative;
+}
+
+/* Override chart-skeleton min-height when inside charts-stack */
+.charts-stack .chart-skeleton {
+	min-height: 0;
+	flex: none;
+}
+
+.mini-chart {
+	position: relative;
+	background: rgba(255, 255, 255, 0.02);
+	border: 1px solid rgba(255, 255, 255, 0.04);
+	border-radius: 6px;
+	overflow: hidden;
+	flex-shrink: 0;
+}
+
+.mini-chart--empty {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.mini-chart-label {
+	position: absolute;
+	top: 4px;
+	left: 8px;
+	font-size: 8px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.5px;
+	z-index: 2;
+	pointer-events: none;
+}
+
+.mini-chart-value {
+	position: absolute;
+	top: 3px;
+	right: 8px;
+	font-size: 11px;
+	font-weight: 700;
+	z-index: 2;
+	pointer-events: none;
+}
+
+.mini-chart-empty-text {
+	color: rgba(255, 255, 255, 0.35);
+	font-size: 11px;
+}
+
+.mini-chart-body {
+	width: 100%;
+	height: 100%;
+}
+
+.mini-chart-crosshair {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background: rgba(255, 255, 255, 0.25);
+	z-index: 3;
+	pointer-events: none;
+	transform: translateX(-0.5px);
+}
+
+.charts-shared-axis {
+	display: flex;
+	justify-content: space-between;
+	padding: 2px 8px;
+	font-size: 8px;
+	color: rgba(255, 255, 255, 0.25);
+	flex-shrink: 0;
+}
+
+/* ─── Unified tooltip ─── */
+.charts-unified-tooltip {
+	position: absolute;
+	top: 0;
+	z-index: 10;
+	transform: translateX(-50%);
+	pointer-events: none;
+	white-space: nowrap;
+}

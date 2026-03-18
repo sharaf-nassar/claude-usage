@@ -39,22 +39,22 @@ export function useAnalyticsData(
       const days = RANGES[range]?.days ?? 1;
       const buckets = bucketsRef.current;
 
-      const [historyData, countData] = await Promise.all([
+      const hasBucketsNow = buckets && buckets.length > 0;
+
+      const [historyData, countData, statsData] = await Promise.all([
         invoke<DataPoint[]>("get_usage_history", { bucket, range }),
         invoke<number>("get_snapshot_count"),
+        hasBucketsNow
+          ? invoke<BucketStats>("get_usage_stats", { bucket, days })
+          : Promise.resolve(null),
       ]);
 
       setHistory(historyData);
       setSnapshotCount(countData);
 
-      if (buckets && buckets.length > 0) {
-        const statsData = await invoke<BucketStats>("get_usage_stats", {
-          bucket,
-          days,
-        });
-
+      if (hasBucketsNow && statsData) {
         const currentBucket = buckets.find((b) => b.label === bucket);
-        if (currentBucket && statsData) {
+        if (currentBucket) {
           setStats({ ...statsData, current: currentBucket.utilization });
         } else {
           setStats(statsData);

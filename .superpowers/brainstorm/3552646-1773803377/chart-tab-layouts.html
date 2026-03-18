@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Charts Tab — Layout Options</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #d4d4d4;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 24px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    color: #e6edf3;
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+
+  .page-subtitle {
+    color: #8b949e;
+    font-size: 13px;
+    margin-bottom: 32px;
+  }
+
+  .options-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 40px;
+  }
+
+  @media (max-width: 1200px) {
+    .options-grid { grid-template-columns: 1fr; }
+  }
+
+  .option-card {
+    background: #161b22;
+    border: 2px solid #21262d;
+    border-radius: 12px;
+    padding: 20px;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    position: relative;
+  }
+
+  .option-card:hover {
+    border-color: #388bfd;
+    box-shadow: 0 0 0 1px rgba(56, 139, 253, 0.3);
+  }
+
+  .option-card.selected {
+    border-color: #388bfd;
+    box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.4);
+  }
+
+  .option-card.selected::after {
+    content: "SELECTED";
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    font-size: 9px;
+    font-weight: 700;
+    color: #388bfd;
+    letter-spacing: 1px;
+    background: rgba(56, 139, 253, 0.15);
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .option-letter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: rgba(56, 139, 253, 0.15);
+    color: #388bfd;
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+
+  .option-title {
+    color: #e6edf3;
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .option-desc {
+    color: #8b949e;
+    font-size: 12px;
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+
+  .option-tag {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 8px;
+    margin-right: 4px;
+    margin-bottom: 12px;
+  }
+
+  .tag-green { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+  .tag-blue { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
+  .tag-purple { background: rgba(167, 139, 250, 0.15); color: #a78bfa; }
+
+  /* ─── Mockup Panel (simulates ~420px sidebar) ─── */
+  .panel-mockup {
+    width: 100%;
+    max-width: 420px;
+    background: #121216;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.06);
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    padding: 6px 10px;
+    gap: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .panel-tab {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 4px;
+    color: #484f58;
+  }
+
+  .panel-tab.active {
+    color: #e6edf3;
+    background: rgba(255,255,255,0.08);
+  }
+
+  .panel-body {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  /* ─── Shared range bar ─── */
+  .range-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .range-pill {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    color: rgba(255,255,255,0.45);
+    background: rgba(255,255,255,0.04);
+  }
+
+  .range-pill.active {
+    background: rgba(255,255,255,0.1);
+    color: #d4d4d4;
+  }
+
+  /* ─── Mini chart (used in all layouts) ─── */
+  .mini-chart {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 6px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .mini-chart-label {
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    font-size: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    z-index: 2;
+  }
+
+  .mini-chart-value {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    z-index: 2;
+  }
+
+  .chart-area {
+    width: 100%;
+    display: block;
+  }
+
+  /* ─── Crosshair line (synced stack) ─── */
+  .crosshair {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255,255,255,0.25);
+    left: 62%;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .crosshair-dot {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    top: 50%;
+    left: -2.5px;
+    transform: translateY(-50%);
+  }
+
+  /* ─── Option A: Synced Stack ─── */
+  .stack-chart {
+    position: relative;
+  }
+
+  .shared-axis {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 8px;
+    font-size: 8px;
+    color: rgba(255,255,255,0.25);
+  }
+
+  /* ─── Option B: Expandable Accordion ─── */
+  .accordion-item {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .accordion-item:hover {
+    border-color: rgba(255,255,255,0.1);
+  }
+
+  .accordion-item.expanded {
+    border-color: rgba(96,165,250,0.2);
+  }
+
+  .accordion-header {
+    display: flex;
+    align-items: center;
+    padding: 6px 8px;
+    gap: 8px;
+  }
+
+  .accordion-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+
+  .accordion-sparkline {
+    flex: 1;
+    height: 16px;
+    min-width: 0;
+  }
+
+  .accordion-value {
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .accordion-chevron {
+    color: rgba(255,255,255,0.3);
+    font-size: 10px;
+    transition: transform 0.15s;
+  }
+
+  .accordion-item.expanded .accordion-chevron {
+    transform: rotate(180deg);
+  }
+
+  .accordion-body {
+    height: 0;
+    overflow: hidden;
+  }
+
+  .accordion-item.expanded .accordion-body {
+    height: auto;
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+
+  /* ─── Option C: Carousel + Thumbnails ─── */
+  .thumb-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+  }
+
+  .thumb {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 4px;
+    padding: 4px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .thumb.active {
+    border-color: rgba(96,165,250,0.4);
+    background: rgba(96,165,250,0.06);
+  }
+
+  .thumb-label {
+    font-size: 7px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 2px;
+  }
+
+  .thumb-sparkline {
+    height: 14px;
+  }
+
+  .main-chart-area {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ─── Recommendation box ─── */
+  .rec-box {
+    background: rgba(56, 139, 253, 0.08);
+    border: 1px solid rgba(56, 139, 253, 0.2);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-top: 8px;
+  }
+
+  .rec-title {
+    color: #388bfd;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+
+  .rec-text {
+    color: #8b949e;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .rec-text strong { color: #d4d4d4; }
+
+  /* ─── SVG patterns ─── */
+  .sparkline-svg { display: block; width: 100%; height: 100%; }
+</style>
+<script>
+function toggleSelect(el) {
+  document.querySelectorAll('.option-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  // Record event
+  if (window.__recordEvent) window.__recordEvent(el.dataset.choice, el.querySelector('.option-title')?.textContent || '');
+}
+</script>
+</head>
+<body>
+
+<h1>Charts Tab — Layout Approaches</h1>
+<p class="page-subtitle">Each mockup simulates the actual ~420px sidebar panel with your dark theme. Click to select.</p>
+
+<div class="options-grid">
+
+  <!-- ═══ OPTION A: Synchronized Stack ═══ -->
+  <div class="option-card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="option-letter">A</div>
+    <div class="option-title">Synchronized Stack</div>
+    <div class="option-desc">Full-width charts stacked vertically, each ~80px tall. Shared time axis at bottom. Hover crosshair syncs across all charts. The Grafana/Datadog pattern — optimized for narrow panels.</div>
+    <span class="option-tag tag-green">RECOMMENDED</span>
+    <span class="option-tag tag-blue">MONITORING PATTERN</span>
+
+    <div class="panel-mockup">
+      <div class="panel-header">
+        <div class="panel-tab">Now</div>
+        <div class="panel-tab">Trends</div>
+        <div class="panel-tab active">Charts</div>
+      </div>
+      <div class="panel-body">
+        <div class="range-bar">
+          <div class="range-pill">1H</div>
+          <div class="range-pill active">24H</div>
+          <div class="range-pill">7D</div>
+          <div class="range-pill">30D</div>
+        </div>
+
+        <!-- Utilization -->
+        <div class="mini-chart stack-chart" style="height:80px;">
+          <div class="mini-chart-label" style="color:rgba(52,211,153,0.7);">Utilization</div>
+          <div class="mini-chart-value" style="color:#34d399;">42%</div>
+          <div class="crosshair"><div class="crosshair-dot" style="background:#34d399;top:55%;"></div></div>
+          <svg class="chart-area" viewBox="0 0 400 80" preserveAspectRatio="none" style="height:100%;">
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="#34d399" stop-opacity="0.02"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="16" x2="400" y2="16" stroke="rgba(248,113,113,0.15)" stroke-dasharray="4 4"/>
+            <line x1="0" y1="40" x2="400" y2="40" stroke="rgba(251,191,36,0.1)" stroke-dasharray="4 4"/>
+            <path d="M0,60 L30,55 L60,50 L90,48 L120,52 L150,45 L180,40 L210,35 L240,38 L270,42 L300,35 L330,40 L360,44 L400,46" fill="url(#g1)" stroke="none"/>
+            <path d="M0,60 L30,55 L60,50 L90,48 L120,52 L150,45 L180,40 L210,35 L240,38 L270,42 L300,35 L330,40 L360,44 L400,46" fill="none" stroke="#34d399" stroke-width="1.5"/>
+          </svg>
+        </div>
+
+        <!-- Token Breakdown -->
+        <div class="mini-chart stack-chart" style="height:80px;">
+          <div class="mini-chart-label" style="color:rgba(96,165,250,0.7);">Tokens</div>
+          <div class="mini-chart-value" style="color:#60a5fa;">24.3k</div>
+          <div class="crosshair"><div class="crosshair-dot" style="background:#60a5fa;top:40%;"></div></div>
+          <svg class="chart-area" viewBox="0 0 400 80" preserveAspectRatio="none" style="height:100%;">
+            <defs>
+              <linearGradient id="g2a" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.25"/>
+                <stop offset="100%" stop-color="#60a5fa" stop-opacity="0.02"/>
+              </linearGradient>
+              <linearGradient id="g2b" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#818cf8" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="#818cf8" stop-opacity="0.02"/>
+              </linearGradient>
+            </defs>
+            <!-- Output (bottom layer) -->
+            <path d="M0,50 L40,45 L80,40 L120,35 L160,30 L200,25 L240,22 L280,28 L320,32 L360,25 L400,30" fill="url(#g2a)" stroke="none"/>
+            <path d="M0,50 L40,45 L80,40 L120,35 L160,30 L200,25 L240,22 L280,28 L320,32 L360,25 L400,30" fill="none" stroke="#60a5fa" stroke-width="1.2"/>
+            <!-- Input (top layer, offset) -->
+            <path d="M0,65 L40,60 L80,55 L120,52 L160,48 L200,42 L240,38 L280,45 L320,48 L360,40 L400,46" fill="url(#g2b)" stroke="none"/>
+            <path d="M0,65 L40,60 L80,55 L120,52 L160,48 L200,42 L240,38 L280,45 L320,48 L360,40 L400,46" fill="none" stroke="#818cf8" stroke-width="1" stroke-dasharray="3 2"/>
+          </svg>
+        </div>
+
+        <!-- Code Changes -->
+        <div class="mini-chart stack-chart" style="height:80px;">
+          <div class="mini-chart-label" style="color:rgba(167,139,250,0.7);">Code</div>
+          <div class="mini-chart-value" style="color:#a78bfa;">+142</div>
+          <div class="crosshair"><div class="crosshair-dot" style="background:#a78bfa;top:35%;"></div></div>
+          <svg class="chart-area" viewBox="0 0 400 80" preserveAspectRatio="none" style="height:100%;">
+            <defs>
+              <linearGradient id="g3a" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.02"/>
+              </linearGradient>
+            </defs>
+            <!-- Added (bars going up) -->
+            <rect x="20" y="30" width="30" height="40" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="65" y="45" width="30" height="25" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="110" y="20" width="30" height="50" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="155" y="35" width="30" height="35" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="200" y="15" width="30" height="55" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="245" y="40" width="30" height="30" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="290" y="28" width="30" height="42" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <rect x="335" y="25" width="30" height="45" rx="2" fill="rgba(52,211,153,0.2)" stroke="rgba(52,211,153,0.4)" stroke-width="0.5"/>
+            <!-- Removed (bars going down, subtle) -->
+            <rect x="20" y="72" width="30" height="8" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="65" y="72" width="30" height="5" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="110" y="72" width="30" height="6" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="155" y="72" width="30" height="4" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="200" y="72" width="30" height="7" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="245" y="72" width="30" height="3" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="290" y="72" width="30" height="5" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+            <rect x="335" y="72" width="30" height="4" rx="2" fill="rgba(248,113,113,0.15)" stroke="rgba(248,113,113,0.3)" stroke-width="0.5"/>
+          </svg>
+        </div>
+
+        <!-- Cache Efficiency -->
+        <div class="mini-chart stack-chart" style="height:80px;">
+          <div class="mini-chart-label" style="color:rgba(251,191,36,0.7);">Cache</div>
+          <div class="mini-chart-value" style="color:#fbbf24;">68%</div>
+          <div class="crosshair"><div class="crosshair-dot" style="background:#fbbf24;top:38%;"></div></div>
+          <svg class="chart-area" viewBox="0 0 400 80" preserveAspectRatio="none" style="height:100%;">
+            <defs>
+              <linearGradient id="g4" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.15"/>
+                <stop offset="100%" stop-color="#fbbf24" stop-opacity="0.02"/>
+              </linearGradient>
+            </defs>
+            <path d="M0,50 L40,45 L80,38 L120,30 L160,28 L200,25 L240,22 L280,30 L320,28 L360,24 L400,26" fill="url(#g4)" stroke="none"/>
+            <path d="M0,50 L40,45 L80,38 L120,30 L160,28 L200,25 L240,22 L280,30 L320,28 L360,24 L400,26" fill="none" stroke="#fbbf24" stroke-width="1.5"/>
+          </svg>
+        </div>
+
+        <div class="shared-axis">
+          <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>Now</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="rec-box" style="margin-top:16px;">
+      <div class="rec-title">Why this works</div>
+      <div class="rec-text">
+        <strong>Full width per chart</strong> — maximizes time-series resolution in narrow panel.<br>
+        <strong>Synced crosshair</strong> — correlate events across metrics at the same timestamp.<br>
+        <strong>Shared axis</strong> — eliminates redundant labels, saves vertical space.<br>
+        <strong>Proven pattern</strong> — Grafana, Datadog, and every monitoring tool uses this.
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ OPTION B: Expandable Accordion ═══ -->
+  <div class="option-card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="option-letter">B</div>
+    <div class="option-title">Expandable Accordion</div>
+    <div class="option-desc">Compact rows with sparkline previews. Click to expand one chart at full height. Collapsed rows show current value + trend. Saves space when you only need one chart.</div>
+    <span class="option-tag tag-purple">SPACE EFFICIENT</span>
+
+    <div class="panel-mockup">
+      <div class="panel-header">
+        <div class="panel-tab">Now</div>
+        <div class="panel-tab">Trends</div>
+        <div class="panel-tab active">Charts</div>
+      </div>
+      <div class="panel-body">
+        <div class="range-bar">
+          <div class="range-pill">1H</div>
+          <div class="range-pill active">24H</div>
+          <div class="range-pill">7D</div>
+          <div class="range-pill">30D</div>
+        </div>
+
+        <!-- Expanded -->
+        <div class="accordion-item expanded">
+          <div class="accordion-header">
+            <span class="accordion-label" style="color:rgba(52,211,153,0.8);">Utilization</span>
+            <div style="flex:1;"></div>
+            <span class="accordion-value" style="color:#34d399;">42%</span>
+            <span class="accordion-chevron">▾</span>
+          </div>
+          <div class="accordion-body" style="height:auto;">
+            <svg viewBox="0 0 400 120" preserveAspectRatio="none" style="width:100%;height:120px;display:block;">
+              <defs>
+                <linearGradient id="ga1" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
+                  <stop offset="100%" stop-color="#34d399" stop-opacity="0.02"/>
+                </linearGradient>
+              </defs>
+              <line x1="0" y1="24" x2="400" y2="24" stroke="rgba(248,113,113,0.15)" stroke-dasharray="4 4"/>
+              <line x1="0" y1="60" x2="400" y2="60" stroke="rgba(251,191,36,0.1)" stroke-dasharray="4 4"/>
+              <path d="M0,90 L30,82 L60,75 L90,72 L120,78 L150,68 L180,60 L210,52 L240,57 L270,63 L300,52 L330,60 L360,66 L400,69" fill="url(#ga1)" stroke="#34d399" stroke-width="1.5"/>
+              <text x="4" y="115" fill="rgba(255,255,255,0.2)" font-size="8">00:00</text>
+              <text x="190" y="115" fill="rgba(255,255,255,0.2)" font-size="8">12:00</text>
+              <text x="380" y="115" fill="rgba(255,255,255,0.2)" font-size="8" text-anchor="end">Now</text>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Collapsed -->
+        <div class="accordion-item">
+          <div class="accordion-header">
+            <span class="accordion-label" style="color:rgba(96,165,250,0.8);">Tokens</span>
+            <svg class="accordion-sparkline" viewBox="0 0 100 16" preserveAspectRatio="none">
+              <path d="M0,12 L12,10 L25,8 L37,6 L50,4 L62,3 L75,5 L87,6 L100,4" fill="none" stroke="rgba(96,165,250,0.4)" stroke-width="1.5"/>
+            </svg>
+            <span class="accordion-value" style="color:#60a5fa;">24.3k</span>
+            <span class="accordion-chevron">▸</span>
+          </div>
+        </div>
+
+        <div class="accordion-item">
+          <div class="accordion-header">
+            <span class="accordion-label" style="color:rgba(167,139,250,0.8);">Code</span>
+            <svg class="accordion-sparkline" viewBox="0 0 100 16" preserveAspectRatio="none">
+              <rect x="5" y="4" width="8" height="12" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="18" y="8" width="8" height="8" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="31" y="2" width="8" height="14" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="44" y="6" width="8" height="10" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="57" y="1" width="8" height="15" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="70" y="7" width="8" height="9" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="83" y="3" width="8" height="13" rx="1" fill="rgba(52,211,153,0.3)"/>
+            </svg>
+            <span class="accordion-value" style="color:#a78bfa;">+142</span>
+            <span class="accordion-chevron">▸</span>
+          </div>
+        </div>
+
+        <div class="accordion-item">
+          <div class="accordion-header">
+            <span class="accordion-label" style="color:rgba(251,191,36,0.8);">Cache</span>
+            <svg class="accordion-sparkline" viewBox="0 0 100 16" preserveAspectRatio="none">
+              <path d="M0,14 L12,12 L25,9 L37,6 L50,5 L62,4 L75,3 L87,5 L100,4" fill="none" stroke="rgba(251,191,36,0.4)" stroke-width="1.5"/>
+            </svg>
+            <span class="accordion-value" style="color:#fbbf24;">68%</span>
+            <span class="accordion-chevron">▸</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rec-box" style="margin-top:16px;background:rgba(167,139,250,0.08);border-color:rgba(167,139,250,0.2);">
+      <div class="rec-title" style="color:#a78bfa;">Trade-offs</div>
+      <div class="rec-text">
+        <strong>Pro:</strong> Most compact — collapsed items use ~32px each. Great if you usually focus on one metric.<br>
+        <strong>Con:</strong> Can't correlate across charts simultaneously. Loses the cockpit "everything at a glance" feel.
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ OPTION C: Carousel + Thumbnails ═══ -->
+  <div class="option-card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="option-letter">C</div>
+    <div class="option-title">Carousel + Thumbnails</div>
+    <div class="option-desc">Row of mini sparkline thumbnails at top for at-a-glance status. Click any to expand as the main chart. One large chart visible at a time with full detail.</div>
+    <span class="option-tag tag-blue">HYBRID</span>
+
+    <div class="panel-mockup">
+      <div class="panel-header">
+        <div class="panel-tab">Now</div>
+        <div class="panel-tab">Trends</div>
+        <div class="panel-tab active">Charts</div>
+      </div>
+      <div class="panel-body">
+        <div class="range-bar">
+          <div class="range-pill">1H</div>
+          <div class="range-pill active">24H</div>
+          <div class="range-pill">7D</div>
+          <div class="range-pill">30D</div>
+        </div>
+
+        <!-- Thumbnail row -->
+        <div class="thumb-row">
+          <div class="thumb active">
+            <div class="thumb-label" style="color:rgba(52,211,153,0.7);">Util</div>
+            <svg class="thumb-sparkline" viewBox="0 0 60 14" preserveAspectRatio="none">
+              <path d="M0,10 L8,8 L16,7 L24,6 L32,8 L40,5 L48,6 L60,7" fill="none" stroke="rgba(52,211,153,0.5)" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="thumb">
+            <div class="thumb-label" style="color:rgba(96,165,250,0.7);">Tokens</div>
+            <svg class="thumb-sparkline" viewBox="0 0 60 14" preserveAspectRatio="none">
+              <path d="M0,12 L8,10 L16,8 L24,6 L32,4 L40,3 L48,5 L60,4" fill="none" stroke="rgba(96,165,250,0.5)" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="thumb">
+            <div class="thumb-label" style="color:rgba(167,139,250,0.7);">Code</div>
+            <svg class="thumb-sparkline" viewBox="0 0 60 14" preserveAspectRatio="none">
+              <rect x="2" y="4" width="5" height="10" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="10" y="7" width="5" height="7" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="18" y="2" width="5" height="12" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="26" y="5" width="5" height="9" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="34" y="1" width="5" height="13" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="42" y="6" width="5" height="8" rx="1" fill="rgba(52,211,153,0.3)"/>
+              <rect x="50" y="3" width="5" height="11" rx="1" fill="rgba(52,211,153,0.3)"/>
+            </svg>
+          </div>
+          <div class="thumb">
+            <div class="thumb-label" style="color:rgba(251,191,36,0.7);">Cache</div>
+            <svg class="thumb-sparkline" viewBox="0 0 60 14" preserveAspectRatio="none">
+              <path d="M0,12 L8,10 L16,7 L24,5 L32,4 L40,3 L48,5 L60,4" fill="none" stroke="rgba(251,191,36,0.5)" stroke-width="1.5"/>
+            </svg>
+          </div>
+        </div>
+
+        <!-- Main chart -->
+        <div class="main-chart-area" style="height:180px;">
+          <div class="mini-chart-label" style="color:rgba(52,211,153,0.7);top:8px;">Utilization %</div>
+          <div class="mini-chart-value" style="color:#34d399;top:6px;">42%</div>
+          <svg viewBox="0 0 400 180" preserveAspectRatio="none" style="width:100%;height:100%;display:block;">
+            <defs>
+              <linearGradient id="gc1" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#34d399" stop-opacity="0.2"/>
+                <stop offset="100%" stop-color="#34d399" stop-opacity="0.02"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="36" x2="400" y2="36" stroke="rgba(248,113,113,0.15)" stroke-dasharray="4 4"/>
+            <line x1="0" y1="90" x2="400" y2="90" stroke="rgba(251,191,36,0.1)" stroke-dasharray="4 4"/>
+            <path d="M0,135 L30,123 L60,112 L90,108 L120,117 L150,102 L180,90 L210,78 L240,85 L270,94 L300,78 L330,90 L360,99 L400,103" fill="url(#gc1)" stroke="#34d399" stroke-width="1.5"/>
+            <text x="4" y="175" fill="rgba(255,255,255,0.2)" font-size="9">00:00</text>
+            <text x="100" y="175" fill="rgba(255,255,255,0.2)" font-size="9">06:00</text>
+            <text x="200" y="175" fill="rgba(255,255,255,0.2)" font-size="9">12:00</text>
+            <text x="300" y="175" fill="rgba(255,255,255,0.2)" font-size="9">18:00</text>
+            <text x="385" y="175" fill="rgba(255,255,255,0.2)" font-size="9" text-anchor="end">Now</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="rec-box" style="margin-top:16px;background:rgba(96,165,250,0.08);border-color:rgba(96,165,250,0.2);">
+      <div class="rec-title" style="color:#60a5fa;">Trade-offs</div>
+      <div class="rec-text">
+        <strong>Pro:</strong> Thumbnails give cockpit overview. Active chart gets maximum height for detail.<br>
+        <strong>Con:</strong> Only one chart is fully readable at a time. Thumbnails are tiny at 4-across in narrow panel.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

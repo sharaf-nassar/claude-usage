@@ -228,7 +228,6 @@ interface UsageRowProps {
   resetsAt: string | null;
   timeMode: TimeMode;
   showTokenSparkline: boolean;
-  tick: number;
 }
 
 function UsageRow({
@@ -237,8 +236,14 @@ function UsageRow({
   resetsAt,
   timeMode,
   showTokenSparkline,
-  tick: _tick,
 }: UsageRowProps) {
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
   const fraction = Math.min(utilization / 100, 1);
   const cls = colorClass(utilization);
   const status = statusText(utilization);

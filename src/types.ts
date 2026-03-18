@@ -100,13 +100,6 @@ export interface PendingUpdate {
   downloadAndInstall: () => Promise<void>;
 }
 
-export interface MergedDataPoint {
-	timestamp: string;
-	utilization: number | null;
-	total_tokens: number | null;
-	total_lines_changed: number | null;
-}
-
 // Code change stats types
 
 export interface LanguageBreakdown {
@@ -135,11 +128,6 @@ export interface SessionCodeStats {
 	lines_added: number;
 	lines_removed: number;
 	net_change: number;
-}
-
-export interface ChartSeriesVisibility {
-	utilization: boolean;
-	tokens: boolean;
 }
 
 // Learning system types
