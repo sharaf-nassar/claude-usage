@@ -1,12 +1,11 @@
 import DOMPurify from "dompurify";
-import type { SearchHit, SessionContext, SessionCodeStats } from "../../types";
+import type { SearchHit, SessionCodeStats } from "../../types";
 
 interface ResultCardProps {
 	hit: SearchHit;
-	expanded: boolean;
-	context: SessionContext | null;
+	selected: boolean;
 	locStats: SessionCodeStats | null;
-	onToggle: () => void;
+	onSelect: () => void;
 }
 
 function timeAgo(timestamp: string): string {
@@ -20,8 +19,8 @@ function timeAgo(timestamp: string): string {
 	return `${days}d ago`;
 }
 
-function ResultCard({ hit, expanded, context, locStats, onToggle }: ResultCardProps) {
-	// Sanitize snippet HTML — only <mark> tags are allowed (for highlighting)
+function ResultCard({ hit, selected, locStats, onSelect }: ResultCardProps) {
+	// Sanitize snippet HTML -- only <mark> tags allowed for search highlighting
 	const sanitized = DOMPurify.sanitize(hit.snippet, {
 		ALLOWED_TAGS: ["mark"],
 	});
@@ -32,8 +31,8 @@ function ResultCard({ hit, expanded, context, locStats, onToggle }: ResultCardPr
 
 	return (
 		<div
-			className={`sessions-result-card${expanded ? " sessions-result-card--expanded" : ""}`}
-			onClick={onToggle}
+			className={`sessions-result-card${selected ? " sessions-result-card--selected" : ""}`}
+			onClick={onSelect}
 		>
 			<div className="sessions-result-header-row">
 				<span
@@ -53,9 +52,6 @@ function ResultCard({ hit, expanded, context, locStats, onToggle }: ResultCardPr
 						{locStats.net_change >= 0 ? "+" : ""}{locStats.net_change}
 					</span>
 				)}
-				<span className="sessions-expand-chevron">
-					{expanded ? "\u25BE" : "\u25B8"}
-				</span>
 			</div>
 			<div className="sessions-result-meta">
 				{meta}
@@ -68,19 +64,6 @@ function ResultCard({ hit, expanded, context, locStats, onToggle }: ResultCardPr
 					</>
 				)}
 			</div>
-			{expanded && context && (
-				<div className="sessions-context">
-					{context.messages.map((msg) => (
-						<div
-							key={msg.message_id}
-							className={`sessions-context-msg${msg.is_match ? " match" : ""}`}
-						>
-							<span className="sessions-context-role">{msg.role}</span>
-							<span className="sessions-context-text">{msg.content}</span>
-						</div>
-					))}
-				</div>
-			)}
 		</div>
 	);
 }

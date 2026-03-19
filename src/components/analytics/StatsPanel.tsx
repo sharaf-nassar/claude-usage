@@ -1,18 +1,12 @@
 import { getColor, TrendArrow } from "./shared";
 import { formatTokenCount } from "../../utils/tokens";
+import { formatNumber } from "../../utils/format";
 import type { BucketStats, TokenStats, CodeStats } from "../../types";
 
 interface StatsPanelProps {
 	bucketStats: BucketStats | null;
 	tokenStats: TokenStats | null;
 	codeStats: CodeStats | null;
-}
-
-function formatNumber(n: number): string {
-	if (Math.abs(n) >= 1000) {
-		return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
-	}
-	return String(n);
 }
 
 function StatsPanel({ bucketStats, tokenStats, codeStats }: StatsPanelProps) {

@@ -81,6 +81,8 @@ export type TrendType = "up" | "down" | "flat" | "unknown";
 
 export type BreakdownMode = "hosts" | "projects" | "sessions";
 
+export type SortMode = "relevance" | "recency";
+
 export interface BreakdownSelection {
   type: "host" | "project" | "session";
   key: string;
@@ -188,18 +190,21 @@ export interface SearchFilters {
 }
 
 export interface SearchHit {
-  message_id: string;
-  session_id: string;
-  content: string;
-  snippet: string;
-  role: string;
-  project: string;
-  host: string;
-  git_branch: string;
-  timestamp: string;
-  tools_used: string;
-  files_modified: string;
-  score: number;
+	message_id: string;
+	session_id: string;
+	content: string;
+	snippet: string;
+	role: string;
+	project: string;
+	host: string;
+	git_branch: string;
+	timestamp: string;
+	tools_used: string;
+	files_modified: string;
+	code_changes: string;
+	commands_run: string;
+	tool_details: string;
+	score: number;
 }
 
 export interface SearchResults {
@@ -219,11 +224,13 @@ export interface SearchFacets {
 }
 
 export interface ContextMessage {
-  message_id: string;
-  role: string;
-  content: string;
-  timestamp: string;
-  is_match: boolean;
+	message_id: string;
+	role: string;
+	content: string;
+	tool_summary: string;
+	tools_used: string;
+	timestamp: string;
+	is_match: boolean;
 }
 
 export interface SessionContext {

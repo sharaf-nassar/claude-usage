@@ -37,10 +37,8 @@ body {
 
 /* Titlebar */
 .titlebar {
-  position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   background: #121216;
   min-height: 28px;
   padding: 2px 8px;
@@ -48,10 +46,23 @@ body {
 }
 
 .titlebar-left {
-  position: relative;
   display: flex;
   align-items: center;
-  margin-right: auto;
+  flex-shrink: 0;
+}
+
+.titlebar-center {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: 2px;
 }
 
 .titlebar-cog {
@@ -76,9 +87,6 @@ body {
 }
 
 .titlebar-text {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
   color: rgba(255, 255, 255, 0.45);
   font-size: 9px;
   font-weight: 700;
@@ -88,9 +96,6 @@ body {
 }
 
 .titlebar-update-btn {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
   background: rgba(251, 191, 36, 0.15);
   border: 1px solid rgba(251, 191, 36, 0.4);
   color: #fbbf24;
@@ -487,7 +492,7 @@ body {
 
 .view-tab--learning {
   color: rgba(34, 197, 94, 0.5);
-  font-size: 11px;
+  font-size: 15px;
 }
 
 .view-tab--learning:hover {
@@ -501,7 +506,7 @@ body {
 
 .view-tab--search {
   color: rgba(96, 165, 250, 0.5);
-  font-size: 13px;
+  font-size: 16px;
 }
 
 .view-tab--search:hover {
@@ -510,7 +515,7 @@ body {
 
 .view-tab--plugins {
   color: rgba(122, 162, 247, 0.45);
-  font-size: 12px;
+  font-size: 16px;
   position: relative;
 }
 
@@ -1163,6 +1168,29 @@ body {
   color: rgba(255, 255, 255, 0.55);
   font-size: 10px;
   white-space: nowrap;
+}
+
+.breakdown-tpt {
+  position: relative;
+  cursor: default;
+}
+
+.breakdown-tpt:hover::after {
+  content: "Average tokens per turn (your message + Claude's response)";
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e1e24;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 100;
 }
 
 .breakdown-time {

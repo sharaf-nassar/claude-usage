@@ -53,9 +53,9 @@ function TitleBar({
 		new WebviewWindow("sessions", {
 			url: "/?view=sessions",
 			title: "Session Search",
-			width: 700,
-			height: 600,
-			minWidth: 500,
+			width: 1000,
+			height: 650,
+			minWidth: 600,
 			minHeight: 400,
 			decorations: false,
 			transparent: true,
@@ -148,28 +148,32 @@ function TitleBar({
 					</button>
 				</div>
 			</div>
-			{pendingUpdate ? (
+			<div className="titlebar-center" data-tauri-drag-region>
+				{pendingUpdate ? (
+					<button
+						className="titlebar-update-btn"
+						onClick={onUpdate}
+						disabled={updating}
+						aria-label={`Update to version ${pendingUpdate.version}`}
+					>
+						{updating ? "Updating\u2026" : `Update ${pendingUpdate.version}`}
+					</button>
+				) : (
+					<span className="titlebar-text" data-tauri-drag-region>
+						QUILL
+					</span>
+				)}
+			</div>
+			<div className="titlebar-right">
+				{version && <span className="titlebar-version">v{version}</span>}
 				<button
-					className="titlebar-update-btn"
-					onClick={onUpdate}
-					disabled={updating}
-					aria-label={`Update to version ${pendingUpdate.version}`}
+					className="titlebar-close"
+					onClick={onClose}
+					aria-label="Close window"
 				>
-					{updating ? "Updating\u2026" : `Update ${pendingUpdate.version}`}
+					&times;
 				</button>
-			) : (
-				<span className="titlebar-text" data-tauri-drag-region>
-					QUILL
-				</span>
-			)}
-			{version && <span className="titlebar-version">v{version}</span>}
-			<button
-				className="titlebar-close"
-				onClick={onClose}
-				aria-label="Close window"
-			>
-				&times;
-			</button>
+			</div>
 		</div>
 	);
 }

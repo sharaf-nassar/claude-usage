@@ -4,6 +4,7 @@ import { useTokenData } from "../../hooks/useTokenData";
 import { useCodeStats } from "../../hooks/useCodeStats";
 import { useEfficiencyStats } from "../../hooks/useEfficiencyStats";
 import { useVelocityStats } from "../../hooks/useVelocityStats";
+import { formatNumber } from "../../utils/format";
 import InsightCard from "./InsightCard";
 import CompactStatsRow from "./CompactStatsRow";
 import BreakdownPanel from "./BreakdownPanel";
@@ -160,7 +161,7 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 							label="Efficiency"
 							value={
 								efficiencyStats.tokensPerLoc !== null
-									? String(efficiencyStats.tokensPerLoc)
+									? formatNumber(efficiencyStats.tokensPerLoc)
 									: null
 							}
 							subtitle="tokens per line of code"
@@ -172,7 +173,7 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 							label="Velocity"
 							value={
 								velocityStats.locPerHour !== null
-									? String(velocityStats.locPerHour)
+									? formatNumber(velocityStats.locPerHour)
 									: null
 							}
 							subtitle="lines changed per hour"
