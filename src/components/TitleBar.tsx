@@ -2,34 +2,28 @@ import { useState, useEffect, useCallback } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen } from "@tauri-apps/api/event";
-import type { PendingUpdate, SectionId } from "../types";
-import type { LayoutNode } from "./tiling/types";
-import PresetsMenu from "./tiling/PresetsMenu";
+import type { PendingUpdate } from "../types";
 
 interface TitleBarProps {
 	showLive: boolean;
 	showAnalytics: boolean;
-	onToggleSection: (sectionId: SectionId) => void;
+	onToggleLive: (on: boolean) => void;
+	onToggleAnalytics: (on: boolean) => void;
 	onClose: () => void;
 	pendingUpdate: PendingUpdate | null;
 	updating: boolean;
 	onUpdate: () => void;
-	layout: LayoutNode | null;
-	visiblePanels: SectionId[];
-	onApplyPreset: (tree: LayoutNode) => void;
 }
 
 function TitleBar({
 	showLive,
 	showAnalytics,
-	onToggleSection,
+	onToggleLive,
+	onToggleAnalytics,
 	onClose,
 	pendingUpdate,
 	updating,
 	onUpdate,
-	layout,
-	visiblePanels,
-	onApplyPreset,
 }: TitleBarProps) {
 	const [version, setVersion] = useState("");
 	const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
@@ -115,13 +109,13 @@ function TitleBar({
 				<div className="view-toggle">
 					<button
 						className={`view-tab${showLive ? " active" : ""}`}
-						onClick={() => onToggleSection("live")}
+						onClick={() => onToggleLive(!showLive)}
 					>
 						Live
 					</button>
 					<button
 						className={`view-tab${showAnalytics ? " active" : ""}`}
-						onClick={() => onToggleSection("analytics")}
+						onClick={() => onToggleAnalytics(!showAnalytics)}
 					>
 						Analytics
 					</button>
@@ -153,13 +147,6 @@ function TitleBar({
 						)}
 					</button>
 				</div>
-				{layout && (
-					<PresetsMenu
-						layout={layout}
-						visiblePanels={visiblePanels}
-						onApplyPreset={onApplyPreset}
-					/>
-				)}
 			</div>
 			{pendingUpdate ? (
 				<button

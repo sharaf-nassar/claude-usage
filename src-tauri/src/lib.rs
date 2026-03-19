@@ -719,6 +719,7 @@ pub fn run() {
                     Target::new(TargetKind::LogDir { file_name: None }),
                 ])
                 .level(log::LevelFilter::Info)
+                .level_for("tantivy", log::LevelFilter::Warn)
                 .max_file_size(5_000_000) // 5 MB rotation
                 .build(),
         )

@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react";
+import React, { useState, useMemo, Suspense } from "react";
 import { useAnalyticsData } from "../../hooks/useAnalyticsData";
 import TabBar from "./TabBar";
 import NowTab from "./NowTab";
 import TrendsTab from "./TrendsTab";
-import ChartsTab from "./ChartsTab";
 import type { RangeType, UsageBucket, AnalyticsTab } from "../../types";
+
+const ChartsTab = React.lazy(() => import("./ChartsTab"));
 
 const TAB_KEY = "quill-analytics-tab";
 
@@ -104,11 +105,13 @@ function AnalyticsView({ currentBuckets }: AnalyticsViewProps) {
 				/>
 			)}
 			{activeTab === "charts" && (
-				<ChartsTab
-					range={chartsRange}
-					onRangeChange={handleChartsRangeChange}
-					currentBuckets={currentBuckets}
-				/>
+				<Suspense fallback={<div className="chart-skeleton" style={{ height: 200 }} />}>
+					<ChartsTab
+						range={chartsRange}
+						onRangeChange={handleChartsRangeChange}
+						currentBuckets={currentBuckets}
+					/>
+				</Suspense>
 			)}
 		</div>
 	);

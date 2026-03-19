@@ -54,6 +54,24 @@ interface TrashIconProps {
   size?: number;
 }
 
+function PencilIcon({ size = 12 }: TrashIconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M11.5 1.5l3 3L5 14H2v-3z" />
+      <path d="M9.5 3.5l3 3" />
+    </svg>
+  );
+}
+
 function TrashIcon({ size = 12 }: TrashIconProps) {
   return (
     <svg
@@ -87,6 +105,9 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
   const [page, setPage] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [editingCwd, setEditingCwd] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { data, loading, error, refresh } = useBreakdownData(mode, days);
 
@@ -174,6 +195,45 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
     }
   }, [selection, confirmDelete, resetConfirm, onSelect, refresh, toast]);
 
+  const handleRenameStart = useCallback(() => {
+    if (!selection || selection.type !== "project") return;
+    resetConfirm();
+    setEditingCwd(selection.key);
+    // Auto-focus after render
+    setTimeout(() => renameInputRef.current?.focus(), 0);
+  }, [selection, resetConfirm]);
+
+  const handleRenameCancel = useCallback(() => {
+    setEditingCwd(null);
+    resetConfirm();
+  }, [resetConfirm]);
+
+  const handleRenameConfirm = useCallback(async () => {
+    if (!selection || !editingCwd) return;
+    const newCwd = editingCwd.trim();
+    if (!newCwd || newCwd === selection.key) {
+      setEditingCwd(null);
+      return;
+    }
+    setRenaming(true);
+    try {
+      await invoke("rename_project", { oldCwd: selection.key, newCwd });
+      setEditingCwd(null);
+      onSelect(null);
+      refresh();
+      toast("info", `Renamed to ${newCwd.split("/").filter(Boolean).pop()}`);
+    } catch (err) {
+      toast("error", `Rename failed: ${err}`);
+    } finally {
+      setRenaming(false);
+    }
+  }, [selection, editingCwd, onSelect, refresh, toast]);
+
+  const willMerge = editingCwd !== null && data.some(
+    (row) => "project" in row && (row as ProjectBreakdown).project === editingCwd.trim()
+      && editingCwd.trim() !== selection?.key,
+  );
+
   return (
     <div className="breakdown-panel">
       <div className="breakdown-header">
@@ -225,11 +285,22 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
               </button>
             </div>
           )}
+          {selection && selection.type === "project" && editingCwd === null && (
+            <button
+              className="breakdown-rename-btn"
+              onClick={handleRenameStart}
+              disabled={renaming || deleting}
+              aria-label={`Rename project: ${selection.key}`}
+              title="Rename project path"
+            >
+              <PencilIcon size={11} />
+            </button>
+          )}
           {selection && (
             <button
               className={`breakdown-delete-btn${confirmDelete ? " confirm" : ""}`}
               onClick={handleDeleteClick}
-              disabled={deleting}
+              disabled={deleting || renaming}
               aria-label={
                 confirmDelete
                   ? `Confirm delete ${selection.type}: ${selection.key}`
@@ -299,42 +370,86 @@ function BreakdownPanel({ days, selection, onSelect }: BreakdownPanelProps) {
                 </div>
               ))
             : mode === "projects"
-              ? (pageData as ProjectBreakdown[]).map((row) => (
+              ? (pageData as ProjectBreakdown[]).map((row) => {
+                  const isEditing = editingCwd !== null && isSelected("project", row.project);
+                  return (
                   <div
                     key={`${row.project}::${row.hostname}`}
                     className={`breakdown-row breakdown-row-project${isSelected("project", row.project) ? " selected" : ""}`}
                     role="listitem"
-                    tabIndex={0}
+                    tabIndex={isEditing ? -1 : 0}
                     aria-label={`${projectName(row.project)} on ${row.hostname}: ${formatTokenCount(row.total_tokens)} tokens, ${row.turn_count} turns, ${row.session_count} sessions`}
-                    onClick={() => handleRowClick("project", row.project, row)}
+                    onClick={() => { if (!isEditing) handleRowClick("project", row.project, row); }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
+                      if (!isEditing && (e.key === "Enter" || e.key === " ")) {
                         e.preventDefault();
                         handleRowClick("project", row.project, row);
                       }
                     }}
                   >
-                    <span className="breakdown-name" title={row.project}>
-                      {projectName(row.project)}
-                      <span className="breakdown-host-tag">{row.hostname}</span>
-                    </span>
-                    <span className="breakdown-tokens">
-                      {formatTokenCount(row.total_tokens)}
-                    </span>
-                    <span className="breakdown-turns">
-                      {row.turn_count} turns
-                      {row.turn_count > 0 && (
-                        <span className="breakdown-tpt"> · {formatTokenCount(Math.round(row.total_tokens / row.turn_count))}/t</span>
-                      )}
-                      <span className="breakdown-session-count">
-                        {row.session_count} sess
+                    {isEditing ? (
+                      <span className="breakdown-name breakdown-rename-input-wrap">
+                        <input
+                          ref={renameInputRef}
+                          className="breakdown-rename-input"
+                          type="text"
+                          value={editingCwd}
+                          onChange={(e) => setEditingCwd(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); handleRenameConfirm(); }
+                            if (e.key === "Escape") { e.preventDefault(); handleRenameCancel(); }
+                          }}
+                          disabled={renaming}
+                          aria-label="New project path"
+                        />
+                        <button
+                          className="breakdown-rename-confirm"
+                          onClick={handleRenameConfirm}
+                          disabled={renaming}
+                          aria-label="Confirm rename"
+                          title="Confirm"
+                        >
+                          &#10003;
+                        </button>
+                        <button
+                          className="breakdown-rename-cancel"
+                          onClick={handleRenameCancel}
+                          disabled={renaming}
+                          aria-label="Cancel rename"
+                          title="Cancel"
+                        >
+                          &#10005;
+                        </button>
+                        {willMerge && (
+                          <span className="breakdown-rename-hint">Will merge into existing project</span>
+                        )}
                       </span>
-                    </span>
-                    <span className="breakdown-time">
-                      {formatRelativeTime(row.last_active)}
-                    </span>
+                    ) : (
+                      <>
+                        <span className="breakdown-name" title={row.project}>
+                          {projectName(row.project)}
+                          <span className="breakdown-host-tag">{row.hostname}</span>
+                        </span>
+                        <span className="breakdown-tokens">
+                          {formatTokenCount(row.total_tokens)}
+                        </span>
+                        <span className="breakdown-turns">
+                          {row.turn_count} turns
+                          {row.turn_count > 0 && (
+                            <span className="breakdown-tpt"> · {formatTokenCount(Math.round(row.total_tokens / row.turn_count))}/t</span>
+                          )}
+                          <span className="breakdown-session-count">
+                            {row.session_count} sess
+                          </span>
+                        </span>
+                        <span className="breakdown-time">
+                          {formatRelativeTime(row.last_active)}
+                        </span>
+                      </>
+                    )}
                   </div>
-                ))
+                  );
+                })
               : (pageData as SessionBreakdown[]).map((row) => (
                   <div
                     key={row.session_id}

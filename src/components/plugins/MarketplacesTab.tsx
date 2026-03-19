@@ -94,6 +94,13 @@ function MarketplacesTab({
 				>
 					{adding ? "Adding..." : "+ Add"}
 				</button>
+				<button
+					className="plugins-btn plugins-btn--secondary"
+					onClick={handleRefreshAll}
+					disabled={refreshingAll}
+				>
+					{refreshingAll ? "Refreshing..." : "Refresh All"}
+				</button>
 			</div>
 			<div className="plugins-list">
 				{marketplaces.map((marketplace) => {
@@ -162,13 +169,6 @@ function MarketplacesTab({
 					{marketplaces.length} marketplace
 					{marketplaces.length !== 1 ? "s" : ""} configured
 				</span>
-				<button
-					className="plugins-btn-link"
-					onClick={handleRefreshAll}
-					disabled={refreshingAll}
-				>
-					{refreshingAll ? "Refreshing..." : "Refresh All"}
-				</button>
 			</div>
 		</div>
 	);

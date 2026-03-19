@@ -1,33 +1,61 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import TitleBar from "./components/TitleBar";
 import UsageDisplay from "./components/UsageDisplay";
 import AnalyticsView from "./components/analytics/AnalyticsView";
-import TilingContainer from "./components/tiling/TilingContainer";
-import {
-	collectPanels,
-	hasPanel,
-	removePanel,
-	smartInsert,
-	saveLastLayout,
-	loadLastLayout,
-	savePositionMemory,
-	loadAllPositionMemory,
-	isSnapshotCompatible,
-	pruneUnknownPanels,
-	removeLegacyKeys,
-} from "./components/tiling/layoutEngine";
-import type { LayoutNode, SectionId } from "./components/tiling/types";
 import { useToast } from "./hooks/useToast";
 import type { UsageData, TimeMode, PendingUpdate } from "./types";
 
+const BASE_WIDTH = 260;
+const BASE_HEIGHTS: Record<TimeMode, number> = {
+	marker: 200,
+	dual: 250,
+	background: 200,
+};
 const TIME_MODE_KEY = "quill-time-mode";
 const SHOW_LIVE_KEY = "quill-show-live";
 const SHOW_ANALYTICS_KEY = "quill-show-analytics";
-const KNOWN_PANELS = new Set<SectionId>(["live", "analytics"]);
+const SIZE_PREFIX = "quill-size-";
+const SPLIT_RATIO_KEY = "quill-split-ratio";
+const DEFAULT_SPLIT_RATIO = 0.4;
+const MIN_SPLIT = 0.15;
+const MAX_SPLIT = 0.85;
+
+type LayoutKey = "live" | "analytics" | "both";
+
+const DEFAULT_SIZES: Record<LayoutKey, { width: number; height: number }> = {
+	live: { width: 280, height: 340 },
+	analytics: { width: 520, height: 560 },
+	both: { width: 520, height: 700 },
+};
+
+function layoutKey(live: boolean, analytics: boolean): LayoutKey | null {
+	if (live && analytics) return "both";
+	if (live) return "live";
+	if (analytics) return "analytics";
+	return null;
+}
+
+function loadSize(key: LayoutKey): { width: number; height: number } {
+	try {
+		const stored = localStorage.getItem(SIZE_PREFIX + key);
+		if (stored) {
+			const parsed = JSON.parse(stored) as { width: number; height: number };
+			if (parsed.width > 0 && parsed.height > 0) return parsed;
+		}
+	} catch { /* ignore */ }
+	return DEFAULT_SIZES[key] ?? DEFAULT_SIZES.live;
+}
+
+function saveSize(key: LayoutKey, width: number, height: number): void {
+	try {
+		localStorage.setItem(SIZE_PREFIX + key, JSON.stringify({ width, height }));
+	} catch { /* ignore */ }
+}
 
 function loadBool(key: string, fallback: boolean): boolean {
 	try {
@@ -38,6 +66,17 @@ function loadBool(key: string, fallback: boolean): boolean {
 	return fallback;
 }
 
+function loadSplitRatio(): number {
+	try {
+		const stored = localStorage.getItem(SPLIT_RATIO_KEY);
+		if (stored) {
+			const val = parseFloat(stored);
+			if (val >= MIN_SPLIT && val <= MAX_SPLIT) return val;
+		}
+	} catch { /* ignore */ }
+	return DEFAULT_SPLIT_RATIO;
+}
+
 function loadTimeMode(): TimeMode {
 	try {
 		const stored = localStorage.getItem(TIME_MODE_KEY);
@@ -46,102 +85,84 @@ function loadTimeMode(): TimeMode {
 	return "marker";
 }
 
-function buildInitialLayout(): LayoutNode | null {
-	const saved = loadLastLayout();
-	if (saved) {
-		const pruned = pruneUnknownPanels(saved.tree, KNOWN_PANELS);
-		if (pruned) return pruned;
-	}
-
-	const panels: SectionId[] = [];
-	if (loadBool(SHOW_LIVE_KEY, true)) panels.push("live");
-	if (loadBool(SHOW_ANALYTICS_KEY, false)) panels.push("analytics");
-
-	if (panels.length === 0) return null;
-	if (panels.length === 1) return { type: "leaf", panelId: panels[0] };
-
-	return panels.reduceRight<LayoutNode>((acc, panelId, i) => {
-		if (i === panels.length - 1) return { type: "leaf", panelId };
-		return {
-			type: "split",
-			direction: "vertical",
-			ratio: 1 / (panels.length - i),
-			children: [{ type: "leaf", panelId }, acc],
-		};
-	}, { type: "leaf", panelId: panels[panels.length - 1] });
-}
-
 function App() {
 	const { toast } = useToast();
 	const [usageData, setUsageData] = useState<UsageData | null>(null);
 	const [showMenu, setShowMenu] = useState(false);
 	const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
 	const [timeMode, setTimeMode] = useState<TimeMode>(loadTimeMode);
-	const [layoutTree, setLayoutTree] = useState<LayoutNode | null>(buildInitialLayout);
-	const containerRef = useRef<HTMLDivElement>(null);
-
-	const visiblePanels = useMemo<SectionId[]>(() => {
-		if (!layoutTree) return [];
-		return collectPanels(layoutTree);
-	}, [layoutTree]);
-
-	const showLive = visiblePanels.includes("live");
-	const showAnalytics = visiblePanels.includes("analytics");
-
-	useEffect(() => {
-		removeLegacyKeys();
-	}, []);
-
-	useEffect(() => {
-		if (layoutTree) {
-			saveLastLayout(layoutTree, visiblePanels);
-		}
-		try {
-			localStorage.setItem(SHOW_LIVE_KEY, String(showLive));
-			localStorage.setItem(SHOW_ANALYTICS_KEY, String(showAnalytics));
-		} catch { /* ignore */ }
-	}, [layoutTree, visiblePanels, showLive, showAnalytics]);
-
-	const updateLayout = useCallback((newTree: LayoutNode) => {
-		setLayoutTree(newTree);
-	}, []);
-
-	const handleToggleSection = useCallback(
-		(sectionId: SectionId) => {
-			if (layoutTree && hasPanel(layoutTree, sectionId)) {
-				savePositionMemory(sectionId, layoutTree, visiblePanels);
-				const newTree = removePanel(layoutTree, sectionId);
-				setLayoutTree(newTree);
-			} else {
-				const memory = loadAllPositionMemory();
-				const entry = memory[sectionId];
-
-				if (entry && isSnapshotCompatible(entry.visiblePanels, visiblePanels, sectionId)) {
-					const pruned = pruneUnknownPanels(entry.snapshot, KNOWN_PANELS);
-					if (pruned) {
-						setLayoutTree(pruned);
-						return;
-					}
-				}
-
-				if (!layoutTree) {
-					setLayoutTree({ type: "leaf", panelId: sectionId });
-				} else {
-					const el = containerRef.current;
-					const w = el?.clientWidth ?? 500;
-					const h = el?.clientHeight ?? 500;
-					setLayoutTree(smartInsert(layoutTree, sectionId, w, h));
-				}
-			}
-		},
-		[layoutTree, visiblePanels],
+	const [showLive, setShowLive] = useState(() => loadBool(SHOW_LIVE_KEY, true));
+	const [showAnalytics, setShowAnalytics] = useState(() => loadBool(SHOW_ANALYTICS_KEY, false));
+	const [splitRatio, setSplitRatio] = useState(loadSplitRatio);
+	const liveRef = useRef<HTMLDivElement>(null);
+	const upperRef = useRef<HTMLDivElement>(null);
+	const splitRatioRef = useRef(splitRatio);
+	const observerRef = useRef<ResizeObserver | null>(null);
+	const showLiveRef = useRef(showLive);
+	const showAnalyticsRef = useRef(showAnalytics);
+	const currentLayoutRef = useRef<LayoutKey | null>(
+		layoutKey(loadBool(SHOW_LIVE_KEY, true), loadBool(SHOW_ANALYTICS_KEY, false)),
 	);
 
-	const handleApplyPreset = useCallback(
-		(tree: LayoutNode) => {
-			setLayoutTree(tree);
+	const saveCurrentSize = useCallback(async () => {
+		const key = currentLayoutRef.current;
+		if (!key) return;
+		try {
+			const size = await getCurrentWindow().innerSize();
+			saveSize(key, Math.round(size.width), Math.round(size.height));
+		} catch { /* ignore */ }
+	}, []);
+
+	const handleClose = useCallback(async () => {
+		await saveCurrentSize();
+		await invoke("hide_window");
+	}, [saveCurrentSize]);
+
+	const switchLayout = useCallback(
+		async (nextLive: boolean, nextAnalytics: boolean) => {
+			const prevKey = currentLayoutRef.current;
+			const nextKey = layoutKey(nextLive, nextAnalytics);
+
+			let currentWidth: number | undefined;
+			if (prevKey) {
+				try {
+					const size = await getCurrentWindow().innerSize();
+					currentWidth = Math.round(size.width);
+					saveSize(prevKey, currentWidth, Math.round(size.height));
+				} catch { /* ignore */ }
+			}
+
+			setShowLive(nextLive);
+			setShowAnalytics(nextAnalytics);
+			showLiveRef.current = nextLive;
+			showAnalyticsRef.current = nextAnalytics;
+			currentLayoutRef.current = nextKey;
+			try { localStorage.setItem(SHOW_LIVE_KEY, String(nextLive)); } catch { /* ignore */ }
+			try { localStorage.setItem(SHOW_ANALYTICS_KEY, String(nextAnalytics)); } catch { /* ignore */ }
+
+			if (nextKey) {
+				const saved = loadSize(nextKey);
+				const width = currentWidth ?? saved.width;
+				try {
+					await getCurrentWindow().setSize(new LogicalSize(width, saved.height));
+				} catch { /* ignore */ }
+			}
 		},
 		[],
+	);
+
+	const handleToggleLive = useCallback(
+		(on: boolean) => {
+			switchLayout(on, showAnalyticsRef.current);
+		},
+		[switchLayout],
+	);
+
+	const handleToggleAnalytics = useCallback(
+		(on: boolean) => {
+			switchLayout(showLiveRef.current, on);
+		},
+		[switchLayout],
 	);
 
 	const handleTimeModeChange = useCallback((mode: TimeMode) => {
@@ -149,9 +170,96 @@ function App() {
 		try { localStorage.setItem(TIME_MODE_KEY, mode); } catch { /* ignore */ }
 	}, []);
 
-	const handleClose = useCallback(async () => {
-		await invoke("hide_window");
-	}, []);
+	const isSplit = showLive && showAnalytics;
+
+	const handleDividerMouseDown = useCallback(
+		(e: React.MouseEvent<HTMLDivElement>) => {
+			e.preventDefault();
+			const liveEl = liveRef.current;
+			const containerEl = upperRef.current;
+			if (!liveEl || !containerEl) return;
+
+			const liveInner = liveEl.querySelector(".usage-display") as HTMLElement | null;
+			const analyticsInner = containerEl.querySelector(".analytics-view") as HTMLElement | null;
+			if (liveInner) {
+				liveInner.style.height = `${liveInner.offsetHeight}px`;
+				liveInner.style.overflow = "hidden";
+				liveInner.style.flex = "none";
+			}
+			if (analyticsInner) {
+				analyticsInner.style.height = `${analyticsInner.offsetHeight}px`;
+				analyticsInner.style.overflow = "hidden";
+				analyticsInner.style.flex = "none";
+			}
+
+			observerRef.current?.disconnect();
+
+			document.documentElement.classList.add("dragging-divider");
+			(e.currentTarget as HTMLElement).classList.add("active");
+
+			let rafId = 0;
+
+			const onMouseMove = (ev: MouseEvent) => {
+				cancelAnimationFrame(rafId);
+				const clientY = ev.clientY;
+				rafId = requestAnimationFrame(() => {
+					const rect = containerEl.getBoundingClientRect();
+					const ratio = Math.max(MIN_SPLIT, Math.min(MAX_SPLIT, (clientY - rect.top) / rect.height));
+					splitRatioRef.current = ratio;
+					liveEl.style.flex = `0 0 ${ratio * 100}%`;
+				});
+			};
+
+			const onMouseUp = () => {
+				cancelAnimationFrame(rafId);
+				document.documentElement.classList.remove("dragging-divider");
+				document.removeEventListener("mousemove", onMouseMove);
+				document.removeEventListener("mouseup", onMouseUp);
+
+				if (liveInner) {
+					liveInner.style.height = "";
+					liveInner.style.overflow = "";
+					liveInner.style.flex = "";
+				}
+				if (analyticsInner) {
+					analyticsInner.style.height = "";
+					analyticsInner.style.overflow = "";
+					analyticsInner.style.flex = "";
+				}
+
+				if (observerRef.current && liveRef.current) {
+					observerRef.current.observe(liveRef.current);
+				}
+
+				setSplitRatio(splitRatioRef.current);
+				try { localStorage.setItem(SPLIT_RATIO_KEY, String(splitRatioRef.current)); } catch { /* ignore */ }
+			};
+
+			document.addEventListener("mousemove", onMouseMove);
+			document.addEventListener("mouseup", onMouseUp);
+		},
+		[],
+	);
+
+	const handleDividerKeyDown = useCallback(
+		(e: React.KeyboardEvent<HTMLDivElement>) => {
+			const step = 0.02;
+			let delta = 0;
+			if (e.key === "ArrowUp") delta = -step;
+			else if (e.key === "ArrowDown") delta = step;
+			else return;
+
+			e.preventDefault();
+			const next = Math.max(MIN_SPLIT, Math.min(MAX_SPLIT, splitRatioRef.current + delta));
+			splitRatioRef.current = next;
+			setSplitRatio(next);
+			if (liveRef.current) {
+				liveRef.current.style.flex = `0 0 ${next * 100}%`;
+			}
+			try { localStorage.setItem(SPLIT_RATIO_KEY, String(next)); } catch { /* ignore */ }
+		},
+		[],
+	);
 
 	const refresh = useCallback(async () => {
 		try {
@@ -213,10 +321,48 @@ function App() {
 	useEffect(() => {
 		const unlistenPromise = getCurrentWindow().onCloseRequested(async (event) => {
 			event.preventDefault();
+			await saveCurrentSize();
 			await invoke("hide_window");
 		});
 		return () => { unlistenPromise.then((fn) => fn()); };
-	}, []);
+	}, [saveCurrentSize]);
+
+	useEffect(() => {
+		if (!showLive) return;
+
+		const el = liveRef.current;
+		if (!el) return;
+
+		const baseH = BASE_HEIGHTS[timeMode] ?? 200;
+		let rafId = 0;
+		let lastScale = -1;
+
+		const updateScale = () => {
+			cancelAnimationFrame(rafId);
+			rafId = requestAnimationFrame(() => {
+				const w = el.clientWidth;
+				const h = el.clientHeight;
+				if (w <= 0 || h <= 0) return;
+				const wScale = w / BASE_WIDTH;
+				const hScale = h / baseH;
+				const scale = Math.round(Math.max(0.6, Math.min(wScale, hScale, 2.5)) * 100) / 100;
+				if (scale !== lastScale) {
+					lastScale = scale;
+					el.style.setProperty("--s", String(scale));
+				}
+			});
+		};
+
+		const observer = new ResizeObserver(updateScale);
+		observerRef.current = observer;
+		observer.observe(el);
+		updateScale();
+		return () => {
+			observer.disconnect();
+			observerRef.current = null;
+			cancelAnimationFrame(rafId);
+		};
+	}, [timeMode, showLive]);
 
 	const handleContextMenu = (e: React.MouseEvent) => {
 		e.preventDefault();
@@ -232,6 +378,7 @@ function App() {
 
 	const handleQuit = async () => {
 		closeMenu();
+		await saveCurrentSize();
 		await invoke("quit_app");
 	};
 
@@ -240,53 +387,50 @@ function App() {
 		refresh();
 	};
 
-	const livePanel = useMemo(
-		() => (
-			<UsageDisplay
-				data={usageData}
-				timeMode={timeMode}
-				onTimeModeChange={handleTimeModeChange}
-			/>
-		),
-		[usageData, timeMode, handleTimeModeChange],
-	);
-
-	const analyticsPanel = useMemo(
-		() => <AnalyticsView currentBuckets={usageData?.buckets ?? []} />,
-		[usageData],
-	);
-
-	const panelMap = useMemo(
-		() => ({
-			live: livePanel,
-			analytics: analyticsPanel,
-		}),
-		[livePanel, analyticsPanel],
-	);
+	const liveStyle = isSplit ? { flex: `0 0 ${splitRatio * 100}%` } : undefined;
 
 	return (
 		<div className="app" onContextMenu={handleContextMenu} onClick={closeMenu}>
 			<TitleBar
 				showLive={showLive}
 				showAnalytics={showAnalytics}
-				onToggleSection={handleToggleSection}
+				onToggleLive={handleToggleLive}
+				onToggleAnalytics={handleToggleAnalytics}
 				onClose={handleClose}
 				pendingUpdate={pendingUpdate}
 				updating={updating}
 				onUpdate={handleUpdate}
-				layout={layoutTree}
-				visiblePanels={visiblePanels}
-				onApplyPreset={handleApplyPreset}
 			/>
-			<div className="tiling-panels" ref={containerRef}>
-				{layoutTree ? (
-					<TilingContainer
-						layout={layoutTree}
-						panels={panelMap}
-						onLayoutChange={updateLayout}
-						timeMode={timeMode}
+			<div
+				className={`panels${isSplit ? " panels--split" : ""}`}
+				ref={upperRef}
+			>
+				{showLive && (
+					<div className="content live-content" ref={liveRef} style={liveStyle}>
+						<UsageDisplay
+							data={usageData}
+							timeMode={timeMode}
+							onTimeModeChange={handleTimeModeChange}
+						/>
+					</div>
+				)}
+				{isSplit && (
+					<div
+						className="panel-divider"
+						role="separator"
+						aria-orientation="horizontal"
+						aria-label="Resize panels"
+						tabIndex={0}
+						onMouseDown={handleDividerMouseDown}
+						onKeyDown={handleDividerKeyDown}
 					/>
-				) : (
+				)}
+				{showAnalytics && (
+					<div className="content analytics-content">
+						<AnalyticsView currentBuckets={usageData?.buckets ?? []} />
+					</div>
+				)}
+				{!showLive && !showAnalytics && (
 					<div className="content">
 						<div className="loading">Toggle a view from the titlebar</div>
 					</div>

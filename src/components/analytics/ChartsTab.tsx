@@ -265,7 +265,7 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 							<ResponsiveContainer width="100%" height="100%">
 								<AreaChart
 									data={anchoredUtil}
-									margin={{ top: 16, right: 4, left: -20, bottom: 0 }}
+									margin={{ top: 16, right: 0, left: 0, bottom: 0 }}
 								>
 									<defs>
 										<linearGradient id="grad-util" x1="0" y1="0" x2="0" y2="1">
@@ -283,6 +283,7 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 										tickLine={false}
 										axisLine={false}
 										tickFormatter={(v) => `${v}%`}
+										width={0}
 										hide
 									/>
 									<ReferenceLine y={80} stroke="rgba(248,113,113,0.3)" strokeDasharray="4 4" />
@@ -313,7 +314,7 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 							<ResponsiveContainer width="100%" height="100%">
 								<AreaChart
 									data={anchoredTokens}
-									margin={{ top: 16, right: 4, left: -20, bottom: 0 }}
+									margin={{ top: 16, right: 0, left: 0, bottom: 0 }}
 									stackOffset="none"
 								>
 									<defs>
@@ -328,7 +329,7 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 									</defs>
 									<CartesianGrid {...gridProps} />
 									<XAxis {...xAxisProps} />
-									<YAxis hide />
+									<YAxis width={0} hide />
 									<Area
 										type="monotone"
 										dataKey="output_tokens"
@@ -366,11 +367,11 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 							<ResponsiveContainer width="100%" height="100%">
 								<BarChart
 									data={anchoredCode}
-									margin={{ top: 16, right: 4, left: -20, bottom: 0 }}
+									margin={{ top: 16, right: 0, left: 0, bottom: 0 }}
 								>
 									<CartesianGrid {...gridProps} />
 									<XAxis {...xAxisProps} />
-									<YAxis hide />
+									<YAxis width={0} hide />
 									<ReferenceLine y={0} stroke="rgba(255,255,255,0.1)" />
 									<Bar
 										dataKey="lines_added"
@@ -405,7 +406,7 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 							<ResponsiveContainer width="100%" height="100%">
 								<AreaChart
 									data={anchoredCache}
-									margin={{ top: 16, right: 4, left: -20, bottom: 0 }}
+									margin={{ top: 16, right: 0, left: 0, bottom: 0 }}
 								>
 									<defs>
 										<linearGradient id="grad-cache" x1="0" y1="0" x2="0" y2="1">
@@ -415,7 +416,7 @@ function ChartsTab({ range, onRangeChange, currentBuckets }: ChartsTabProps) {
 									</defs>
 									<CartesianGrid {...gridProps} />
 									<XAxis {...xAxisProps} />
-									<YAxis domain={[0, 100]} hide />
+									<YAxis domain={[0, 100]} width={0} hide />
 									<Area
 										type="monotone"
 										dataKey="hitRate"

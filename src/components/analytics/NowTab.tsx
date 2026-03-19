@@ -7,6 +7,7 @@ import { useVelocityStats } from "../../hooks/useVelocityStats";
 import InsightCard from "./InsightCard";
 import CompactStatsRow from "./CompactStatsRow";
 import BreakdownPanel from "./BreakdownPanel";
+import TokenSparkline from "./TokenSparkline";
 import type {
 	RangeType,
 	UsageBucket,
@@ -105,7 +106,7 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 		breakdownSelection?.type === "session" ? breakdownSelection.key : null;
 	const tokenCwd =
 		breakdownSelection?.type === "project" ? breakdownSelection.key : null;
-	const { stats: tokenStats } = useTokenData(
+	const { history: tokenHistory, stats: tokenStats } = useTokenData(
 		tokenRange,
 		tokenHostname,
 		tokenSessionId,
@@ -133,6 +134,8 @@ function NowTab({ range, onRangeChange, currentBuckets }: NowTabProps) {
 					))}
 				</div>
 			</div>
+
+			<TokenSparkline data={tokenHistory} range={tokenRange} />
 
 			{error && (
 				<div className="analytics-error" role="alert">

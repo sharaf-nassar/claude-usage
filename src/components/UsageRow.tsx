@@ -1,9 +1,6 @@
 import type { ReactNode } from "react";
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { LineChart, Line, YAxis, ResponsiveContainer } from "recharts";
-import { formatTokenCount } from "../utils/tokens";
-import type { TimeMode, TokenDataPoint } from "../types";
+import type { TimeMode } from "../types";
 
 function colorClass(utilization: number): string {
   if (utilization < 50) return "green";
@@ -94,68 +91,6 @@ function getTimeFraction(
   }
 }
 
-function TokenSparkline() {
-  const [sparkData, setSparkData] = useState<TokenDataPoint[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const fetchData = () => {
-      invoke<TokenDataPoint[]>("get_token_history", {
-        range: "24h",
-        hostname: null,
-        sessionId: null,
-        cwd: null,
-      })
-        .then((data) => {
-          if (!cancelled && data.length > 0) {
-            const sampled =
-              data.length > 30
-                ? data.filter((_, i) => i % Math.ceil(data.length / 30) === 0)
-                : data;
-            setSparkData(sampled);
-          }
-        })
-        .catch(() => {});
-    };
-    fetchData();
-    const interval = setInterval(fetchData, 3 * 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, []);
-
-  if (sparkData.length < 2) return null;
-
-  const total = sparkData.reduce((s, d) => s + d.total_tokens, 0);
-
-  return (
-    <div className="token-sparkline-row">
-      <span className="token-sparkline-label">
-        {formatTokenCount(total)} tokens (24h)
-      </span>
-      <div className="token-sparkline-chart">
-        <ResponsiveContainer width="100%" height={16}>
-          <LineChart
-            data={sparkData}
-            margin={{ top: 2, right: 2, bottom: 2, left: 2 }}
-          >
-            <YAxis domain={["dataMin", "dataMax"]} hide />
-            <Line
-              type="monotone"
-              dataKey="total_tokens"
-              stroke="#60a5fa"
-              strokeWidth={1}
-              dot={false}
-              animationDuration={200}
-            />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
 interface BarProps {
   fraction: number;
   cls: string;
@@ -227,7 +162,6 @@ interface UsageRowProps {
   utilization: number;
   resetsAt: string | null;
   timeMode: TimeMode;
-  showTokenSparkline: boolean;
 }
 
 function UsageRow({
@@ -235,7 +169,6 @@ function UsageRow({
   utilization,
   resetsAt,
   timeMode,
-  showTokenSparkline,
 }: UsageRowProps) {
   const [, setTick] = useState(0);
 
@@ -282,7 +215,6 @@ function UsageRow({
           timeFraction={timeFraction}
         />
       )}
-      {showTokenSparkline && <TokenSparkline />}
     </div>
   );
 }
