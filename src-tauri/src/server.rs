@@ -723,7 +723,13 @@ async fn get_session_search(
         date_to: params.get("date_to").cloned(),
     };
 
-    let result = tokio::task::block_in_place(|| idx.search(&query, &filters, page, page_size));
+    let sort_by = params
+        .get("sort_by")
+        .cloned()
+        .unwrap_or_else(|| "relevance".to_string());
+
+    let result =
+        tokio::task::block_in_place(|| idx.search(&query, &filters, &sort_by, page, page_size));
 
     match result {
         Ok(results) => (StatusCode::OK, Json(serde_json::json!(results))),

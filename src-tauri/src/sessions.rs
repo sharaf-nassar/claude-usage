@@ -30,6 +30,7 @@ pub struct SessionSchema {
     pub code_changes: Field,
     pub commands_run: Field,
     pub tool_details: Field,
+    pub display_text: Field,
     #[allow(dead_code)]
     pub schema: Schema,
 }
@@ -58,7 +59,7 @@ pub struct SessionIndex {
 }
 
 impl SessionIndex {
-    const SCHEMA_VERSION: u32 = 3;
+    const SCHEMA_VERSION: u32 = 4;
 
     /// Open an existing index or create a new one at the given directory.
     pub fn open_or_create(index_dir: &Path) -> Result<Self, String> {
@@ -132,6 +133,7 @@ impl SessionIndex {
         let code_changes = builder.add_text_field("code_changes", TEXT | STORED);
         let commands_run = builder.add_text_field("commands_run", TEXT | STORED);
         let tool_details = builder.add_text_field("tool_details", TEXT | STORED);
+        let display_text = builder.add_text_field("display_text", TEXT | STORED);
 
         // Facet fields (hierarchical)
         let project = builder.add_facet_field("project", FacetOptions::default());
@@ -160,6 +162,7 @@ impl SessionIndex {
             code_changes,
             commands_run,
             tool_details,
+            display_text,
             schema: schema.clone(),
         };
 
@@ -266,6 +269,23 @@ impl SessionIndex {
         doc.add_text(self.fields.code_changes, msg.code_changes.join("\n"));
         doc.add_text(self.fields.commands_run, msg.commands_run.join("\n"));
         doc.add_text(self.fields.tool_details, msg.tool_details.join("\n"));
+
+        // Compose display_text: text content + tool summaries
+        let mut display_parts: Vec<String> = Vec::new();
+        if !msg.content.is_empty() {
+            display_parts.push(truncate(&msg.content, 500));
+        }
+        for change in &msg.code_changes {
+            display_parts.push(change.clone());
+        }
+        for cmd in &msg.commands_run {
+            display_parts.push(cmd.clone());
+        }
+        for detail in &msg.tool_details {
+            display_parts.push(detail.clone());
+        }
+        let display_text = truncate(&display_parts.join("\n"), 2000);
+        doc.add_text(self.fields.display_text, &display_text);
 
         doc.add_facet(
             self.fields.project,
@@ -424,6 +444,7 @@ impl SessionIndex {
         &self,
         query: &str,
         filters: &SearchFilters,
+        sort_by: &str,
         page: usize,
         page_size: usize,
     ) -> Result<SearchResults, String> {
@@ -441,6 +462,7 @@ impl SessionIndex {
                 f.code_changes,
                 f.commands_run,
                 f.tool_details,
+                f.display_text,
             ],
         );
         parser.set_conjunction_by_default();
@@ -542,25 +564,40 @@ impl SessionIndex {
         let limit = page_size.min(100);
         let offset = page * page_size;
 
-        // Order by timestamp descending; also count total hits
-        let (top_docs, total_count) = searcher
-            .search(
-                &combined,
-                &(
-                    TopDocs::with_limit(limit)
-                        .and_offset(offset)
-                        .order_by_fast_field::<DateTime>("timestamp", tantivy::Order::Desc),
-                    Count,
-                ),
-            )
-            .map_err(|e| format!("Search error: {e}"))?;
+        let (doc_addresses, total_count): (Vec<(f32, tantivy::DocAddress)>, usize) =
+            if sort_by == "recency" {
+                let (top_docs, count) = searcher
+                    .search(
+                        &combined,
+                        &(
+                            TopDocs::with_limit(limit)
+                                .and_offset(offset)
+                                .order_by_fast_field::<DateTime>("timestamp", tantivy::Order::Desc),
+                            Count,
+                        ),
+                    )
+                    .map_err(|e| format!("Search error: {e}"))?;
+                let addrs = top_docs
+                    .into_iter()
+                    .map(|(_, addr)| (0.0f32, addr))
+                    .collect();
+                (addrs, count)
+            } else {
+                let (top_docs, count) = searcher
+                    .search(
+                        &combined,
+                        &(TopDocs::with_limit(limit).and_offset(offset), Count),
+                    )
+                    .map_err(|e| format!("Search error: {e}"))?;
+                (top_docs, count)
+            };
 
-        // Snippet generator for content field
-        let snippet_gen = SnippetGenerator::create(&searcher, &combined, f.content)
+        // Snippet generator for display_text field
+        let snippet_gen = SnippetGenerator::create(&searcher, &combined, f.display_text)
             .map_err(|e| format!("Snippet generator error: {e}"))?;
 
-        let mut hits = Vec::with_capacity(top_docs.len());
-        for (_sort_value, doc_addr) in &top_docs {
+        let mut hits = Vec::with_capacity(doc_addresses.len());
+        for (score, doc_addr) in &doc_addresses {
             let doc: TantivyDocument = searcher
                 .doc(*doc_addr)
                 .map_err(|e| format!("Doc retrieval: {e}"))?;
@@ -614,7 +651,7 @@ impl SessionIndex {
                 code_changes: get_text(f.code_changes),
                 commands_run: get_text(f.commands_run),
                 tool_details: get_text(f.tool_details),
-                score: 0.0,
+                score: *score,
             });
         }
 
@@ -729,12 +766,25 @@ impl SessionIndex {
 
         let context_messages: Vec<ContextMessage> = messages[start..end]
             .iter()
-            .map(|m| ContextMessage {
-                message_id: m.uuid.clone(),
-                role: m.role.clone(),
-                content: m.content.clone(),
-                timestamp: m.timestamp.clone(),
-                is_match: m.uuid == message_id,
+            .map(|m| {
+                let tool_summary = m
+                    .code_changes
+                    .iter()
+                    .chain(m.commands_run.iter())
+                    .chain(m.tool_details.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                ContextMessage {
+                    message_id: m.uuid.clone(),
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                    tool_summary,
+                    tools_used: m.tools_used.join(" "),
+                    timestamp: m.timestamp.clone(),
+                    is_match: m.uuid == message_id,
+                }
             })
             .collect();
 
@@ -804,6 +854,8 @@ pub struct ContextMessage {
     pub message_id: String,
     pub role: String,
     pub content: String,
+    pub tool_summary: String,
+    pub tools_used: String,
     pub timestamp: String,
     pub is_match: bool,
 }
@@ -1212,12 +1264,14 @@ pub struct SessionIndexState(pub Arc<SessionIndex>);
 pub async fn search_sessions(
     query: String,
     filters: SearchFilters,
+    sort_by: Option<String>,
     page: usize,
     page_size: usize,
     state: tauri::State<'_, SessionIndexState>,
 ) -> Result<SearchResults, String> {
     let idx = state.0.clone();
-    crate::run_blocking(move || idx.search(&query, &filters, page, page_size))
+    let sort = sort_by.unwrap_or_else(|| "relevance".to_string());
+    crate::run_blocking(move || idx.search(&query, &filters, &sort, page, page_size))
 }
 
 #[tauri::command]
