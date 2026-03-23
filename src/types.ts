@@ -371,3 +371,42 @@ export interface BulkUpdateItem {
 	status: string;
 	error: string | null;
 }
+
+// Restart feature types
+
+export interface ClaudeInstance {
+	pid: number;
+	session_id: string | null;
+	cwd: string;
+	tty: string;
+	terminal_type: TerminalType;
+	status: InstanceStatus;
+	last_seen: string;
+}
+
+export type TerminalType =
+	| { type: "Tmux"; target: string }
+	| { type: "Plain" };
+
+export type InstanceStatus =
+	| "Idle"
+	| "Processing"
+	| "Unknown"
+	| "Restarting"
+	| "Exited"
+	| { RestartFailed: { error: string } };
+
+export type RestartPhase =
+	| "Idle"
+	| "WaitingForIdle"
+	| "Restarting"
+	| "Complete"
+	| "Cancelled"
+	| "TimedOut";
+
+export interface RestartStatus {
+	phase: RestartPhase;
+	instances: ClaudeInstance[];
+	waiting_on: number;
+	elapsed_seconds: number;
+}

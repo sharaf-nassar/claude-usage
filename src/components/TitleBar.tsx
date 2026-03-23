@@ -83,6 +83,26 @@ function TitleBar({
 		});
 	}, []);
 
+	const handleOpenRestart = useCallback(async () => {
+		const existing = await WebviewWindow.getByLabel("restart");
+		if (existing) {
+			await existing.show();
+			await existing.setFocus();
+			return;
+		}
+		new WebviewWindow("restart", {
+			url: "/?view=restart",
+			title: "Restart Claude Code",
+			width: 420,
+			height: 400,
+			minWidth: 320,
+			minHeight: 250,
+			decorations: false,
+			transparent: true,
+			resizable: true,
+		});
+	}, []);
+
 	const handleOpenPlugins = useCallback(async () => {
 		const existing = await WebviewWindow.getByLabel("plugins");
 		if (existing) {
@@ -145,6 +165,14 @@ function TitleBar({
 						{pluginUpdateCount > 0 && (
 							<span className="plugins-update-badge">{pluginUpdateCount}</span>
 						)}
+					</button>
+					<button
+						className="view-tab view-tab--restart"
+						onClick={handleOpenRestart}
+						aria-label="Restart Claude Code"
+						title="Restart Claude Code"
+					>
+						&#8635;
 					</button>
 				</div>
 			</div>

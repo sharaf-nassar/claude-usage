@@ -14,6 +14,9 @@ const LearningWindowView = React.lazy(
 const PluginsWindowView = React.lazy(
   () => import("./windows/PluginsWindowView"),
 );
+const RestartWindowView = React.lazy(
+  () => import("./windows/RestartWindowView"),
+);
 
 // Zoom with Ctrl+Plus / Ctrl+Minus / Ctrl+0 (per-window, persisted)
 {
@@ -62,6 +65,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <LearningWindowView />
         ) : view === "plugins" ? (
           <PluginsWindowView />
+        ) : view === "restart" ? (
+          <RestartWindowView />
         ) : (
           <App />
         )}

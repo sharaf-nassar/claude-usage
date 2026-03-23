@@ -8,6 +8,7 @@ mod memory_optimizer;
 mod models;
 mod plugins;
 mod prompt_utils;
+mod restart;
 mod server;
 pub(crate) mod sessions;
 mod storage;
@@ -903,6 +904,13 @@ pub fn run() {
                 plugins::spawn_update_checker(update_state, update_handle);
             }
 
+            // Initialize restart state and run startup cleanup
+            {
+                let restart_state = std::sync::Arc::new(restart::RestartState::new());
+                app.manage(restart_state);
+                restart::startup_cleanup();
+            }
+
             // Restore always-on-top preference (default: off)
             let on_top_enabled = STORAGE
                 .get()
@@ -1045,6 +1053,12 @@ pub fn run() {
             sessions::get_session_context,
             sessions::get_search_facets,
             sessions::rebuild_search_index,
+            restart::discover_claude_instances,
+            restart::request_restart,
+            restart::cancel_restart,
+            restart::get_restart_status,
+            restart::install_restart_hooks,
+            restart::check_restart_hooks_installed,
             hide_window,
             quit_app,
         ])

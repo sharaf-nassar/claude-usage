@@ -38,3 +38,4 @@ futures = "0.3"
 sha2 = "0.10.9"
 similar = "2"
 regex = "1"
+nix = { version = "0.29", features = ["signal", "process"] }
