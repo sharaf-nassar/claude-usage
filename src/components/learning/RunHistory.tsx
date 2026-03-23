@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import type { LearningRun } from "../../types";
+import type { LearningRun, RunPhase } from "../../types";
 import { timeAgo } from "../../utils/time";
 
 interface RunHistoryProps {
@@ -24,6 +24,21 @@ function statusIcon(status: string): { icon: string; className: string } {
     default:
       return { icon: "\u2717", className: "learning-run-icon--fail" };
   }
+}
+
+function phaseStatusDot(status: string): { color: string; label: string } {
+	switch (status) {
+		case "completed":
+			return { color: "#22C55E", label: "\u2713" };
+		case "running":
+			return { color: "#3B82F6", label: "\u25CF" };
+		case "skipped":
+			return { color: "#6B7280", label: "\u2014" };
+		case "failed":
+			return { color: "#EF4444", label: "\u2717" };
+		default:
+			return { color: "#9CA3AF", label: "\u25CB" };
+	}
 }
 
 function RunHistory({ runs, liveLogs }: RunHistoryProps) {
@@ -146,6 +161,32 @@ function RunHistory({ runs, liveLogs }: RunHistoryProps) {
           {selected.error && (
             <div className="learning-run-detail-error">{selected.error}</div>
           )}
+          {selected.phases && (() => {
+						const phases: RunPhase[] = typeof selected.phases === "string"
+							? JSON.parse(selected.phases)
+							: selected.phases;
+						return (
+							<div className="learning-run-phases">
+								{phases.map((phase) => {
+									const dot = phaseStatusDot(phase.status);
+									return (
+										<div key={phase.name} className="learning-run-phase">
+											<span style={{ color: dot.color }}>{dot.label}</span>
+											<span className="learning-phase-name">{phase.name}</span>
+											<span className="learning-phase-duration">
+												{formatDuration(phase.duration_ms)}
+											</span>
+											{phase.findings_count > 0 && (
+												<span className="learning-phase-count">
+													{phase.findings_count} found
+												</span>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						);
+					})()}
           {selected.status === "running" && liveLogs[selected.id]?.length > 0 && (
             <pre className="learning-run-detail-logs" ref={logRef}>
               {liveLogs[selected.id].join("\n")}

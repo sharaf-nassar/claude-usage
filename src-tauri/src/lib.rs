@@ -3,6 +3,7 @@ mod ai_client;
 mod auth;
 mod config;
 mod fetcher;
+mod git_analysis;
 mod learning;
 mod memory_optimizer;
 mod models;

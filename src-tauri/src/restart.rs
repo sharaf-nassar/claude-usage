@@ -1,4 +1,6 @@
+#[cfg(unix)]
 use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -141,6 +143,7 @@ fn map_status(s: &str) -> InstanceStatus {
 // ── State file reading ──
 
 /// Read all state files and return valid entries, cleaning up stale ones.
+#[cfg(unix)]
 pub fn read_state_files() -> Vec<(StateFileEntry, PathBuf)> {
 	let dir = state_dir();
 	let entries = match fs::read_dir(&dir) {
@@ -197,6 +200,7 @@ pub fn read_state_files() -> Vec<(StateFileEntry, PathBuf)> {
 
 /// Scan /proc for Claude Code processes not already tracked by state files.
 /// Returns (pid, cwd, tty) tuples.
+#[cfg(unix)]
 pub fn scan_proc_for_claude(known_pids: &[u32]) -> Vec<(u32, String, String)> {
 	let mut found = Vec::new();
 	let proc_dir = match fs::read_dir("/proc") {
@@ -245,6 +249,7 @@ pub fn scan_proc_for_claude(known_pids: &[u32]) -> Vec<(u32, String, String)> {
 
 /// Query tmux for all pane TTYs and their targets.
 /// Returns a map of TTY path -> tmux target string (e.g., "main:0.1").
+#[cfg(unix)]
 pub fn detect_tmux_panes() -> HashMap<String, String> {
 	let output = Command::new("tmux")
 		.args(["list-panes", "-a", "-F", "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}"])
@@ -265,6 +270,7 @@ pub fn detect_tmux_panes() -> HashMap<String, String> {
 }
 
 /// Discover all running Claude Code instances from state files and /proc scan.
+#[cfg(unix)]
 pub fn discover_instances() -> Vec<ClaudeInstance> {
 	let state_entries = read_state_files();
 	let known_pids: Vec<u32> = state_entries.iter().map(|(s, _)| s.pid).collect();
@@ -498,6 +504,7 @@ pub fn hooks_installed() -> bool {
 // ── Orchestration ──
 
 /// Clean up stale restart flag and orphaned state files on Quill startup.
+#[cfg(unix)]
 pub fn startup_cleanup() {
 	// Remove stale restart flag
 	let flag = restart_flag_path();
@@ -528,6 +535,7 @@ pub fn startup_cleanup() {
 }
 
 /// Inject restart command into a tmux pane via send-keys.
+#[cfg(unix)]
 fn restart_via_tmux(target: &str, session_id: &str) -> Result<(), String> {
 	let cmd = format!("claude --resume \"{session_id}\"");
 	let output = Command::new("tmux")
@@ -543,6 +551,7 @@ fn restart_via_tmux(target: &str, session_id: &str) -> Result<(), String> {
 }
 
 /// Inject restart command into a plain terminal via PTY device write.
+#[cfg(unix)]
 fn restart_via_pty(tty_path: &str, session_id: &str) -> Result<(), String> {
 	let cmd = format!("claude --resume \"{session_id}\"\r");
 	let mut file = fs::OpenOptions::new()
@@ -556,10 +565,12 @@ fn restart_via_pty(tty_path: &str, session_id: &str) -> Result<(), String> {
 	Ok(())
 }
 
+#[cfg(unix)]
 const TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 /// Spawn the background orchestrator task.
 /// `force`: if true, skip waiting for idle and SIGTERM immediately.
+#[cfg(unix)]
 pub fn spawn_orchestrator(
 	state: Arc<RestartState>,
 	app: tauri::AppHandle,
@@ -695,11 +706,23 @@ pub fn spawn_orchestrator(
 	});
 }
 
+// ── Non-Unix stubs ──
+
+#[cfg(not(unix))]
+pub fn startup_cleanup() {}
+
 // ── Tauri Commands ──
 
 #[tauri::command]
 pub async fn discover_claude_instances() -> Vec<ClaudeInstance> {
-	tokio::task::block_in_place(discover_instances)
+	#[cfg(unix)]
+	{
+		tokio::task::block_in_place(discover_instances)
+	}
+	#[cfg(not(unix))]
+	{
+		Vec::new()
+	}
 }
 
 #[tauri::command]
@@ -708,72 +731,115 @@ pub async fn request_restart(
 	app: tauri::AppHandle,
 	state: tauri::State<'_, Arc<RestartState>>,
 ) -> Result<(), String> {
-	if state.running.load(Ordering::SeqCst) {
-		return Ok(()); // Already running
-	}
+	#[cfg(unix)]
+	{
+		if state.running.load(Ordering::SeqCst) {
+			return Ok(()); // Already running
+		}
 
-	// Write restart flag
-	let flag = restart_flag_path();
-	if let Some(parent) = flag.parent() {
-		fs::create_dir_all(parent)
-			.map_err(|e| format!("Failed to create flag directory: {e}"))?;
-	}
-	fs::write(&flag, "").map_err(|e| format!("Failed to write restart flag: {e}"))?;
+		// Write restart flag
+		let flag = restart_flag_path();
+		if let Some(parent) = flag.parent() {
+			fs::create_dir_all(parent)
+				.map_err(|e| format!("Failed to create flag directory: {e}"))?;
+		}
+		fs::write(&flag, "").map_err(|e| format!("Failed to write restart flag: {e}"))?;
 
-	state.running.store(true, Ordering::SeqCst);
-	spawn_orchestrator(Arc::clone(&state), app, force);
-	Ok(())
+		state.running.store(true, Ordering::SeqCst);
+		spawn_orchestrator(Arc::clone(&state), app, force);
+		Ok(())
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = (force, app, state);
+		Err("Restart orchestration is not supported on Windows".to_string())
+	}
 }
 
 #[tauri::command]
 pub async fn cancel_restart(
 	state: tauri::State<'_, Arc<RestartState>>,
 ) -> Result<(), String> {
-	let flag = restart_flag_path();
-	let _ = fs::remove_file(&flag);
-	// Reset phase to Idle so the UI is immediately usable again
-	*state.phase.lock() = RestartPhase::Idle;
-	*state.started_at.lock() = None;
-	Ok(())
+	#[cfg(unix)]
+	{
+		let flag = restart_flag_path();
+		let _ = fs::remove_file(&flag);
+		// Reset phase to Idle so the UI is immediately usable again
+		*state.phase.lock() = RestartPhase::Idle;
+		*state.started_at.lock() = None;
+		Ok(())
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = state;
+		Ok(())
+	}
 }
 
 #[tauri::command]
 pub async fn get_restart_status(
 	state: tauri::State<'_, Arc<RestartState>>,
 ) -> Result<RestartStatus, String> {
-	let phase = state.phase.lock().clone();
-	let instances = if state.running.load(Ordering::SeqCst) || phase == RestartPhase::Complete {
-		state.instances.lock().clone()
-	} else {
-		tokio::task::block_in_place(discover_instances)
-	};
+	#[cfg(unix)]
+	{
+		let phase = state.phase.lock().clone();
+		let instances = if state.running.load(Ordering::SeqCst) || phase == RestartPhase::Complete {
+			state.instances.lock().clone()
+		} else {
+			tokio::task::block_in_place(discover_instances)
+		};
 
-	let waiting_on = instances
-		.iter()
-		.filter(|i| i.status == InstanceStatus::Processing || i.status == InstanceStatus::Unknown)
-		.count();
+		let waiting_on = instances
+			.iter()
+			.filter(|i| i.status == InstanceStatus::Processing || i.status == InstanceStatus::Unknown)
+			.count();
 
-	let elapsed_seconds = state
-		.started_at
-		.lock()
-		.map(|s| s.elapsed().as_secs())
-		.unwrap_or(0);
+		let elapsed_seconds = state
+			.started_at
+			.lock()
+			.map(|s| s.elapsed().as_secs())
+			.unwrap_or(0);
 
-	Ok(RestartStatus {
-		phase,
-		instances,
-		waiting_on,
-		elapsed_seconds,
-	})
+		Ok(RestartStatus {
+			phase,
+			instances,
+			waiting_on,
+			elapsed_seconds,
+		})
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = state;
+		Ok(RestartStatus {
+			phase: RestartPhase::Idle,
+			instances: Vec::new(),
+			waiting_on: 0,
+			elapsed_seconds: 0,
+		})
+	}
 }
 
 #[tauri::command]
 pub async fn install_restart_hooks() -> Result<(), String> {
-	install_hook_script()?;
-	merge_hooks_into_settings()
+	#[cfg(unix)]
+	{
+		install_hook_script()?;
+		merge_hooks_into_settings()
+	}
+	#[cfg(not(unix))]
+	{
+		Err("Restart hooks are not supported on Windows".to_string())
+	}
 }
 
 #[tauri::command]
 pub async fn check_restart_hooks_installed() -> bool {
-	hooks_installed()
+	#[cfg(unix)]
+	{
+		hooks_installed()
+	}
+	#[cfg(not(unix))]
+	{
+		false
+	}
 }

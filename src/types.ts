@@ -153,6 +153,14 @@ export interface LearnedRule {
   state: string;
   project: string | null;
   is_anti_pattern: boolean;
+  source: string | null;
+}
+
+export interface RunPhase {
+	name: string;
+	status: string;
+	duration_ms: number | null;
+	findings_count: number;
 }
 
 export interface LearningRun {
@@ -166,6 +174,7 @@ export interface LearningRun {
   error: string | null;
   logs: string | null;
   created_at: string;
+  phases: RunPhase[] | null;
 }
 
 export interface LearningLogEvent {

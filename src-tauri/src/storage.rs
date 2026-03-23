@@ -2,13 +2,14 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::models::{
-    BucketStats, CodeStats, CodeStatsHistoryPoint, DataPoint, HostBreakdown, LanguageBreakdown,
-    LearnedRule, LearnedRulePayload, LearningRun, LearningRunPayload, LearningStatus,
-    ObservationPayload, ProjectBreakdown, ProjectTokens, SessionBreakdown, SessionCodeStats,
-    SessionStats, TokenDataPoint, TokenReportPayload, TokenStats, ToolCount, UsageBucket,
+    BucketStats, CodeStats, CodeStatsHistoryPoint, DataPoint, GitSnapshot, HostBreakdown,
+    LanguageBreakdown, LearnedRule, LearnedRulePayload, LearningRun, LearningRunPayload,
+    LearningStatus, ObservationPayload, ProjectBreakdown, ProjectTokens, SessionBreakdown,
+    SessionCodeStats, SessionStats, TokenDataPoint, TokenReportPayload, TokenStats, ToolCount,
+    UsageBucket,
 };
 
 fn wilson_lower_bound(alpha: f64, beta: f64) -> f64 {
@@ -456,6 +457,44 @@ impl Storage {
 
             conn.execute("INSERT INTO schema_version (version) VALUES (7)", [])
                 .map_err(|e| format!("Failed to record migration 7: {e}"))?;
+        }
+
+        // Migration 8: multi-stream learning — git cache, rule source, run phases
+        if current_version < 8 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS git_snapshots (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project      TEXT NOT NULL UNIQUE,
+                    commit_hash  TEXT NOT NULL,
+                    commit_count INTEGER NOT NULL,
+                    raw_data     TEXT NOT NULL,
+                    created_at   TEXT DEFAULT (datetime('now'))
+                );",
+            )
+            .map_err(|e| format!("Migration 8 (git_snapshots table): {e}"))?;
+
+            let has_source: bool = conn
+                .prepare("SELECT source FROM learned_rules LIMIT 0")
+                .is_ok();
+            if !has_source {
+                conn.execute_batch(
+                    "ALTER TABLE learned_rules ADD COLUMN source TEXT DEFAULT 'observations';",
+                )
+                .map_err(|e| format!("Migration 8 (source column): {e}"))?;
+            }
+
+            let has_phases: bool = conn
+                .prepare("SELECT phases FROM learning_runs LIMIT 0")
+                .is_ok();
+            if !has_phases {
+                conn.execute_batch(
+                    "ALTER TABLE learning_runs ADD COLUMN phases TEXT DEFAULT NULL;",
+                )
+                .map_err(|e| format!("Migration 8 (phases column): {e}"))?;
+            }
+
+            conn.execute("INSERT INTO schema_version (version) VALUES (8)", [])
+                .map_err(|e| format!("Failed to record migration 8: {e}"))?;
         }
 
         let storage = Self {
@@ -1559,7 +1598,7 @@ impl Storage {
         let conn = self.conn.lock();
         conn.execute(
             "UPDATE learning_runs SET observations_analyzed=?2, rules_created=?3, rules_updated=?4,
-             duration_ms=?5, status=?6, error=?7, logs=?8
+             duration_ms=?5, status=?6, error=?7, logs=?8, phases=?9
              WHERE id=?1",
             params![
                 id,
@@ -1570,6 +1609,7 @@ impl Storage {
                 payload.status,
                 payload.error,
                 payload.logs,
+                payload.phases,
             ],
         )
         .map_err(|e| format!("Update learning run error: {e}"))?;
@@ -1591,7 +1631,7 @@ impl Storage {
         let conn = self.conn.lock();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT id, trigger_mode, observations_analyzed, rules_created, rules_updated, duration_ms, status, error, logs, created_at
+                "SELECT id, trigger_mode, observations_analyzed, rules_created, rules_updated, duration_ms, status, error, logs, created_at, phases
                  FROM learning_runs ORDER BY created_at DESC LIMIT ?1",
             )
             .map_err(|e| format!("Prepare error: {e}"))?;
@@ -1609,6 +1649,7 @@ impl Storage {
                     error: row.get(7)?,
                     logs: row.get(8)?,
                     created_at: row.get(9)?,
+                    phases: row.get(10)?,
                 })
             })
             .map_err(|e| format!("Query error: {e}"))?;
@@ -1631,8 +1672,8 @@ impl Storage {
         let beta = (1.0 - payload.confidence) * evidence_scale;
         let is_anti = payload.is_anti_pattern as i32;
         conn.execute(
-            "INSERT INTO learned_rules (name, domain, confidence, observation_count, file_path, alpha, beta_param, last_evidence_at, state, project, is_anti_pattern)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'emerging', ?9, ?10)
+            "INSERT INTO learned_rules (name, domain, confidence, observation_count, file_path, alpha, beta_param, last_evidence_at, state, project, is_anti_pattern, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'emerging', ?9, ?10, ?11)
              ON CONFLICT(name) DO UPDATE SET
                  domain = excluded.domain,
                  alpha = learned_rules.alpha + excluded.alpha,
@@ -1641,6 +1682,7 @@ impl Storage {
                  file_path = CASE WHEN length(excluded.file_path) > 0 THEN excluded.file_path ELSE learned_rules.file_path END,
                  last_evidence_at = excluded.last_evidence_at,
                  is_anti_pattern = excluded.is_anti_pattern,
+                 source = CASE WHEN excluded.source IS NOT NULL THEN excluded.source ELSE learned_rules.source END,
                  updated_at = datetime('now')",
             params![
                 payload.name,
@@ -1653,6 +1695,7 @@ impl Storage {
                 now,
                 payload.project,
                 is_anti,
+                payload.source,
             ],
         )
         .map_err(|e| format!("Insert learned rule error: {e}"))?;
@@ -1686,7 +1729,7 @@ impl Storage {
             let conn = self.conn.lock();
             let mut stmt = conn
                 .prepare_cached(
-                    "SELECT name, domain, alpha, beta_param, observation_count, last_evidence_at, state, project, created_at, updated_at, is_anti_pattern
+                    "SELECT name, domain, alpha, beta_param, observation_count, last_evidence_at, state, project, created_at, updated_at, is_anti_pattern, source
                      FROM learned_rules
                      WHERE state != 'suppressed'",
                 )
@@ -1705,6 +1748,7 @@ impl Storage {
                         row.get::<_, String>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, i32>(10).unwrap_or(0),
+                        row.get::<_, Option<String>>(11)?,
                     ))
                 })
                 .map_err(|e| format!("Query error: {e}"))?;
@@ -1723,12 +1767,13 @@ impl Storage {
                     created,
                     updated,
                     is_anti,
+                    source,
                 ) = row.map_err(|e| format!("Row error: {e}"))?;
                 map.insert(
                     name,
                     (
                         domain, alpha, beta, obs_count, last_ev, state, project, created, updated,
-                        is_anti,
+                        is_anti, source,
                     ),
                 );
             }
@@ -1779,6 +1824,7 @@ impl Storage {
                     created_at,
                     updated_at,
                     is_anti,
+                    source,
                 ) = meta_map.remove(&name).unwrap_or((
                     None,
                     1.0,
@@ -1790,6 +1836,7 @@ impl Storage {
                     now.clone(),
                     now,
                     0,
+                    None,
                 ));
 
                 let fresh = freshness_factor(last_ev.as_deref());
@@ -1809,6 +1856,7 @@ impl Storage {
                     state,
                     project,
                     is_anti_pattern: is_anti != 0,
+                    source,
                 });
             }
         }
@@ -1827,6 +1875,7 @@ impl Storage {
                 created_at,
                 updated_at,
                 is_anti,
+                source,
             ),
         ) in meta_map
         {
@@ -1847,6 +1896,7 @@ impl Storage {
                 state,
                 project,
                 is_anti_pattern: is_anti != 0,
+                source,
             });
         }
 
@@ -1860,6 +1910,51 @@ impl Storage {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(rules)
+    }
+
+    pub fn get_git_snapshot(&self, project: &str) -> Result<Option<GitSnapshot>, String> {
+        let conn = self.conn.lock();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT project, commit_hash, commit_count, raw_data
+                 FROM git_snapshots WHERE project = ?1",
+            )
+            .map_err(|e| format!("Prepare error: {e}"))?;
+
+        let result = stmt
+            .query_row(params![project], |row| {
+                Ok(GitSnapshot {
+                    project: row.get(0)?,
+                    commit_hash: row.get(1)?,
+                    commit_count: row.get(2)?,
+                    raw_data: row.get(3)?,
+                })
+            })
+            .optional()
+            .map_err(|e| format!("Query error: {e}"))?;
+
+        Ok(result)
+    }
+
+    pub fn upsert_git_snapshot(&self, snapshot: &GitSnapshot) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO git_snapshots (project, commit_hash, commit_count, raw_data)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(project) DO UPDATE SET
+                 commit_hash = excluded.commit_hash,
+                 commit_count = excluded.commit_count,
+                 raw_data = excluded.raw_data,
+                 created_at = datetime('now')",
+            params![
+                snapshot.project,
+                snapshot.commit_hash,
+                snapshot.commit_count,
+                snapshot.raw_data,
+            ],
+        )
+        .map_err(|e| format!("Upsert git snapshot error: {e}"))?;
+        Ok(())
     }
 
     pub fn delete_learned_rule(&self, name: &str) -> Result<(), String> {

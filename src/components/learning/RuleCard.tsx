@@ -90,6 +90,17 @@ function RuleCard({ rule, onDelete }: RuleCardProps) {
       {rule.project && (
         <span className="learning-rule-project">{rule.project}</span>
       )}
+      {rule.source && rule.source !== "observations" && (
+        <span
+          className="learning-rule-source"
+          style={{
+            backgroundColor: rule.source === "synthesis" ? "#3B82F6" : "#F97316",
+            color: "#fff",
+          }}
+        >
+          {rule.source}
+        </span>
+      )}
       {expanded && (
         <pre className="learning-rule-content">
           {loading ? "Loading\u2026" : content}

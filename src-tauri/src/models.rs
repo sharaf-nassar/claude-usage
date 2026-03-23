@@ -158,6 +158,8 @@ pub struct LearningRunPayload {
     pub error: Option<String>,
     #[serde(default)]
     pub logs: Option<String>,
+    #[serde(default)]
+    pub phases: Option<String>,
 }
 
 // Payload to record learned rule metadata from /learn skill
@@ -175,6 +177,8 @@ pub struct LearnedRulePayload {
     pub project: Option<String>,
     #[serde(default)]
     pub is_anti_pattern: bool,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 fn default_confidence() -> f64 {
@@ -193,6 +197,7 @@ pub struct LearningRun {
     pub status: String,
     pub error: Option<String>,
     pub logs: Option<String>,
+    pub phases: Option<String>,
     pub created_at: String,
 }
 
@@ -209,6 +214,7 @@ pub struct LearnedRule {
     pub state: String,
     pub project: Option<String>,
     pub is_anti_pattern: bool,
+    pub source: Option<String>,
 }
 
 // Tool frequency count for status strip
@@ -321,6 +327,68 @@ pub struct AnalysisOutput {
     pub new_rules: Vec<AnalysisRule>,
     #[serde(default)]
     pub verdicts: Vec<RuleVerdict>,
+}
+
+// Intermediate findings from a single analysis stream.
+// Both observation and git streams produce this same format
+// so the synthesis prompt can reason about them uniformly.
+#[derive(Deserialize, Serialize, Clone, Debug, schemars::JsonSchema)]
+pub struct StreamFindings {
+    #[serde(default)]
+    pub patterns: Vec<StreamPattern>,
+    #[serde(default)]
+    pub verdicts: Vec<RuleVerdict>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, schemars::JsonSchema)]
+pub struct StreamPattern {
+    pub name: String,
+    pub domain: String,
+    pub description: String,
+    pub evidence: String,
+    pub confidence: f64,
+    #[serde(default)]
+    pub is_anti_pattern: bool,
+}
+
+// Cached git history snapshot, one per project.
+// `created_at` is DB-populated via DEFAULT, not passed from Rust on insert.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct GitSnapshot {
+    pub project: String,
+    pub commit_hash: String,
+    pub commit_count: i64,
+    pub raw_data: String,
+}
+
+// Phase progress tracking for multi-stream learning runs
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct RunPhase {
+    pub name: String,
+    pub status: String,
+    pub duration_ms: Option<i64>,
+    pub findings_count: i64,
+}
+
+impl StreamFindings {
+    /// Convert single-stream findings directly to AnalysisOutput.
+    /// Used when only one stream produces findings (skip Sonnet).
+    pub fn to_analysis_output(&self) -> AnalysisOutput {
+        AnalysisOutput {
+            new_rules: self
+                .patterns
+                .iter()
+                .map(|p| AnalysisRule {
+                    name: p.name.clone(),
+                    domain: p.domain.clone(),
+                    confidence: p.confidence,
+                    content: format!("{}\n\nEvidence: {}", p.description, p.evidence),
+                    is_anti_pattern: p.is_anti_pattern,
+                })
+                .collect(),
+            verdicts: self.verdicts.clone(),
+        }
+    }
 }
 
 // Tagged learning log event for real-time frontend streaming
