@@ -8,7 +8,7 @@ You are configuring the Quill plugin. This plugin has two components:
 1. **Usage hook** — reports per-turn token usage to the Quill desktop widget over HTTP
 2. **MCP server** — lets you query session history, search past conversations, and analyze usage patterns
 
-The widget server requires a bearer secret for authentication. The secret is stored at `~/Library/Application Support/com.quilltoolkit.app/auth_secret` on macOS or `~/.local/share/com.quilltoolkit.app/auth_secret` on Linux.
+The widget server requires a bearer secret for authentication. The secret is stored at `~/.local/share/com.quilltoolkit.app/auth_secret` on the machine running the widget.
 
 Follow these steps exactly:
 
@@ -22,7 +22,7 @@ Follow these steps exactly:
 
 2. If they choose "This machine":
    - Set the URL to `http://localhost:19876`.
-   - Read the secret from `~/Library/Application Support/com.quilltoolkit.app/auth_secret` (macOS) or `~/.local/share/com.quilltoolkit.app/auth_secret` (Linux) using the Read tool.
+   - Read the secret from `~/.local/share/com.quilltoolkit.app/auth_secret` using the Read tool.
    - If the secret file exists, display it to the user and tell them:
      "Save this secret — you'll need it when running `/quill-hook:setup` on any other machine that should report to this widget."
    - If the secret file doesn't exist, warn the user that the widget doesn't appear to have been launched yet. The config will be saved and will work once the widget creates the secret on first launch. They can re-run `/quill-hook:setup` afterward.
@@ -33,7 +33,7 @@ Follow these steps exactly:
      Provide reasonable example options like "192.168.1.100" with descriptions, but they'll likely type their own.
    - Construct the URL as `http://<their-input>:19876`
    - Use AskUserQuestion to ask:
-     "What is the bearer secret from the widget machine? (On macOS run `cat ~/Library/Application\\ Support/com.quilltoolkit.app/auth_secret`, on Linux run `cat ~/.local/share/com.quilltoolkit.app/auth_secret`)"
+     "What is the bearer secret from the widget machine? (Run `cat ~/.local/share/com.quilltoolkit.app/auth_secret` on that machine to get it)"
      Provide a single option "I don't have it yet" with description "Skip for now — the hook will fail until a valid secret is configured. Re-run /quill-hook:setup when you have it."
    - If they provide a secret, use it. If they choose "I don't have it yet", set secret to empty string and warn them.
 
@@ -72,9 +72,9 @@ Follow these steps exactly:
    - If `uv` is found, proceed to step 8.
 
 8. Verify the MCP server can start:
-   - Run: `uv run --directory ${CLAUDE_PLUGIN_ROOT}/mcp python -c "from server import mcp; print('ok')"`
+   - Run: `uv run --directory ~/.config/quill/mcp python -c "from server import mcp; print('ok')"`
    - If it succeeds, tell the user: "The Quill MCP server is ready. It provides 12 tools for querying your session history, searching past conversations, and analyzing usage patterns. The MCP server starts automatically — no additional configuration needed."
-   - If it fails, show the error and suggest: "Try running `uv sync --directory ${CLAUDE_PLUGIN_ROOT}/mcp` to install dependencies, then re-run `/quill-hook:setup`."
+   - If it fails, show the error and suggest: "Try running `uv sync --directory ~/.config/quill/mcp` to install dependencies, then re-run `/quill-hook:setup`."
 
 ## Part 3: CLAUDE.md MCP Instructions
 
@@ -85,36 +85,7 @@ Follow these steps exactly:
    - If the section does not exist, **append** the block below. Place it after any existing `###` subsections under `## Shortcuts` if that section exists, otherwise append at the end of the file.
    - The block to insert (do NOT modify this content):
 
-   ~~~
-   ### Session History Search (Quill MCP)
-
-   - **Session History Tool**: Use the Quill MCP tools to search past Claude Code session history.
-     Quill indexes all sessions into a searchable database with full-text search across conversation
-     content, code changes, commands run, and tool usage.
-
-   - **MCP Tools** (use these directly):
-     - `mcp__plugin_quill-hook_quill__list_projects` — List all projects with session counts
-     - `mcp__plugin_quill-hook_quill__list_sessions` — List sessions with metadata (filter by project, date)
-     - `mcp__plugin_quill-hook_quill__get_session_overview` — Preview a session (first message, tools, files)
-     - `mcp__plugin_quill-hook_quill__search_history` — Full-text search across all session history
-     - `mcp__plugin_quill-hook_quill__get_session_context` — Get surrounding messages around a search hit
-     - `mcp__plugin_quill-hook_quill__get_file_history` — All tool actions on a file across sessions
-     - `mcp__plugin_quill-hook_quill__get_branch_activity` — Work done on a specific git branch
-     - `mcp__plugin_quill-hook_quill__find_related_sessions` — Sessions that share files with a given session
-     - `mcp__plugin_quill-hook_quill__get_token_usage` — Token usage analytics by period (1h/24h/7d/30d)
-     - `mcp__plugin_quill-hook_quill__get_learned_rules` — Learned behavioral rules from past sessions
-     - `mcp__plugin_quill-hook_quill__get_tool_details` — Full tool input/output for a specific message
-     - `mcp__plugin_quill-hook_quill__get_index_status` — Index and database health stats
-
-   - **Workflow**: Use progressive disclosure — browse (`list_projects`/`list_sessions`) → search
-     (`search_history`) → cross-reference (`get_file_history`/`get_branch_activity`) → drill down
-     (`get_session_context`/`get_tool_details`).
-
-   - **Use When**: User asks about past sessions, previous work, conversation history, "what did we do",
-     token usage/costs, or which sessions touched a specific file or branch.
-
-   - **Do NOT**: Read raw JSONL session logs from `~/.claude/projects/` — use Quill instead.
-   ~~~
+   Read the content from `~/.config/quill/templates/claude-md-section.md` and insert it.
 
    - Tell the user: "Added Quill MCP instructions to ~/.claude/CLAUDE.md — Claude will now know when and how to use the session history tools automatically."
 
