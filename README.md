@@ -409,9 +409,12 @@ plugin/                       # Claude Code plugin (hook + setup/learn skills)
       SKILL.md                # Interactive setup wizard
     learn/
       SKILL.md                # Manual learning analysis trigger
+    build/
+      SKILL.md                # Multi-agent feature coordinator
   commands/
     setup.md                  # Setup command documentation
     learn.md                  # Learn command documentation
+    build.md                  # Multi-agent feature build command
   mcp/
     server.py                 # FastMCP server for session history tools
     dependencies.py           # Lifespan and shared state

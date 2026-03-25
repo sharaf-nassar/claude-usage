@@ -40,3 +40,16 @@ The plugin registers a Stop hook that fires after every Claude Code turn. It:
 3. POSTs the data to the widget's HTTP server (2s timeout, fails silently)
 
 No data is sent until you run `/quill-hook:setup`.
+
+## Build skill
+
+The `/quill-hook:build` command orchestrates multi-agent feature implementation. Give it a feature description and it will:
+
+1. Explore the codebase with parallel agents
+2. Create an implementation plan organized into waves of parallel tasks
+3. Dispatch implementor, verifier, and UI designer agents to build it
+4. Verify each wave and produce a final report
+
+```
+/quill-hook:build add a dark mode toggle to the settings page
+```
