@@ -55,7 +55,8 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 - **`get_token_usage`** — query token usage and cost analytics
 - **`get_learned_rules`** — retrieve learned coding patterns
 - **`get_tool_details`** — inspect full tool input/output for a specific action
-- Automatically available when the Quill plugin is installed — no extra configuration needed
+- Automatically configured on local installs when the app starts — no plugin or manual setup needed
+- For remote hosts, available after installing the plugin and running `/quill:setup`
 
 ### Desktop integration
 - **System tray** with Show / Always on Top / Check for Update / Quit
@@ -101,22 +102,24 @@ A cross-platform desktop widget that displays your Claude AI plan usage in a com
 }}}%%
 
 graph LR
-    subgraph Sources [" "]
+    subgraph LocalBox [" Local Setup · automatic "]
         Claude(["Local Claude Code"])
-        Remote(["Remote Hosts"])
+        LocalHooks(["Bundled Hooks"])
+        LocalMCP(["MCP Server"])
     end
 
-    subgraph PluginBox [" Claude Code Plugin "]
-        Hooks(["Hook Scripts"])
-        MCP(["MCP Server"])
+    subgraph RemoteBox [" Remote Setup · plugin "]
+        Remote(["Remote Claude Code"])
+        PluginHooks(["Plugin Hooks"])
     end
 
-    Claude -- "&ensp;hooks&ensp;" --> Hooks
-    Remote -. "&ensp;hooks · over network&ensp;" .-> Hooks
-    Claude <-->|"&ensp;MCP protocol&ensp;"| MCP
+    Claude -- "&ensp;hooks&ensp;" --> LocalHooks
+    Claude <-->|"&ensp;MCP protocol&ensp;"| LocalMCP
+    Remote -. "&ensp;hooks · over network&ensp;" .-> PluginHooks
 
-    Hooks -- "&ensp;tokens · observations · sessions&ensp;" --> Backend
-    MCP -- "&ensp;queries&ensp;" --> Backend
+    LocalHooks -- "&ensp;tokens · observations · sessions&ensp;" --> Backend
+    LocalMCP -- "&ensp;queries&ensp;" --> Backend
+    PluginHooks -. "&ensp;tokens · observations · sessions&ensp;" .-> Backend
 
     API(["Anthropic API"])
     GH(["GitHub Releases"])
@@ -133,8 +136,9 @@ graph LR
 
     style Claude fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px
     style Remote fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px,stroke-dasharray: 5 5
-    style Hooks fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px
-    style MCP fill:#14b8a6,stroke:#2dd4bf,color:#fff,stroke-width:2px
+    style LocalHooks fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px
+    style LocalMCP fill:#14b8a6,stroke:#2dd4bf,color:#fff,stroke-width:2px
+    style PluginHooks fill:#6366f1,stroke:#818cf8,color:#fff,stroke-width:2px,stroke-dasharray: 5 5
     style API fill:#f59e0b,stroke:#fbbf24,color:#000,stroke-width:2px
     style GH fill:#10b981,stroke:#34d399,color:#000,stroke-width:2px
     style Frontend fill:#3b82f6,stroke:#60a5fa,color:#fff,stroke-width:2px
@@ -142,20 +146,21 @@ graph LR
     style SQLite fill:#a855f7,stroke:#c084fc,color:#fff,stroke-width:2px
     style Tantivy fill:#ec4899,stroke:#f472b6,color:#fff,stroke-width:2px
     style Widget fill:#1e293b,stroke:#475569,color:#e2e8f0
-    style PluginBox fill:#1e293b,stroke:#475569,color:#e2e8f0
-    style Sources fill:transparent,stroke:transparent
+    style LocalBox fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style RemoteBox fill:#1e293b,stroke:#475569,color:#e2e8f0,stroke-dasharray: 5 5
 
     linkStyle 0 stroke:#818cf8,stroke-width:2px
-    linkStyle 1 stroke:#818cf8,stroke-width:2px,stroke-dasharray: 5 5
-    linkStyle 2 stroke:#2dd4bf,stroke-width:2px
+    linkStyle 1 stroke:#2dd4bf,stroke-width:2px
+    linkStyle 2 stroke:#818cf8,stroke-width:2px,stroke-dasharray: 5 5
     linkStyle 3 stroke:#818cf8,stroke-width:2px
     linkStyle 4 stroke:#2dd4bf,stroke-width:2px
-    linkStyle 5 stroke:#f59e0b,stroke-width:2px
-    linkStyle 6 stroke:#f59e0b,stroke-width:2px,stroke-dasharray: 5 5
-    linkStyle 7 stroke:#10b981,stroke-width:2px
-    linkStyle 8 stroke:#60a5fa,stroke-width:2px
-    linkStyle 9 stroke:#c084fc,stroke-width:2px
-    linkStyle 10 stroke:#f472b6,stroke-width:2px
+    linkStyle 5 stroke:#818cf8,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 6 stroke:#f59e0b,stroke-width:2px
+    linkStyle 7 stroke:#f59e0b,stroke-width:2px,stroke-dasharray: 5 5
+    linkStyle 8 stroke:#10b981,stroke-width:2px
+    linkStyle 9 stroke:#60a5fa,stroke-width:2px
+    linkStyle 10 stroke:#c084fc,stroke-width:2px
+    linkStyle 11 stroke:#f472b6,stroke-width:2px
 ```
 
 ## Prerequisites
@@ -212,8 +217,13 @@ rm -rf ~/Library/Application\ Support/com.quilltoolkit.app
 # Linux:
 rm -rf ~/.local/share/com.quilltoolkit.app
 
-# Remove hook config
+# Remove hook scripts, MCP server, and config
 rm -rf ~/.config/quill
+
+# Remove Claude Code integration added by the app
+# (hooks in ~/.claude/settings.json with _source: "quill-setup",
+#  MCP entry in ~/.claude.json, and CLAUDE.md section are left in place
+#  — remove manually if desired)
 ```
 
 ### From source
@@ -237,9 +247,9 @@ claude /login
 
 No additional configuration is needed — the widget starts tracking utilization immediately.
 
-## Token Tracking, Learning & Session Search (Optional)
+## Token Tracking, Learning & Session Search
 
-The widget includes an HTTP server (port `19876`, configurable via `QUILL_PORT`) that receives data from Claude Code via hooks. The plugin enables three features:
+The app includes an HTTP server (port `19876`, configurable via `QUILL_PORT`) that receives data from Claude Code via hooks. This powers three features:
 
 - **Token tracking** — per-turn input/output/cache token counts, powering the sparkline in the live view and the token overlay on the analytics chart
 - **Learning** — observes tool usage patterns across sessions and can analyze them to extract reusable rules (stored in `~/.claude/rules/learned/`)
@@ -247,7 +257,22 @@ The widget includes an HTTP server (port `19876`, configurable via `QUILL_PORT`)
 
 The HTTP server uses bearer-token authentication and rate limiting to secure incoming data.
 
-### Install the hook (Claude Code plugin)
+### Local setup (automatic)
+
+When the Quill app runs on the same machine as Claude Code, **everything is configured automatically** on app startup — no manual steps required. The app:
+
+1. Deploys hook scripts to `~/.config/quill/scripts/`
+2. Deploys the MCP server to `~/.config/quill/mcp/`
+3. Registers hooks in `~/.claude/settings.json`
+4. Registers the MCP server in `~/.claude.json`
+5. Writes connection config to `~/.config/quill/config.json`
+6. Adds MCP usage instructions to `~/.claude/CLAUDE.md`
+
+Just install the app, launch it, and restart Claude Code. Token tracking, learning, session search, and MCP tools will all be active.
+
+### Remote setup (plugin required)
+
+When Claude Code runs on a different machine than the Quill app (e.g. a remote dev server), install the plugin on the remote machine to relay data over the network:
 
 1. Add the marketplace:
 
@@ -258,20 +283,24 @@ The HTTP server uses bearer-token authentication and rate limiting to secure inc
 2. Install the plugin:
 
 ```
-/plugin install quill-hook@sharaf-nassar/quill
+/plugin install quill@sharaf-nassar/quill
 ```
 
 3. **Restart** Claude Code, then run the setup skill:
 
 ```
-/quill-hook:setup
+/quill:setup
 ```
 
-The setup skill will ask where the widget is running (this machine or a remote IP) and save the config. After setup, every Claude Code turn will report token counts and tool observations to the widget.
+The setup skill will ask for the IP address of the machine running the Quill app and the bearer secret. After setup, every Claude Code turn on the remote machine will report token counts and tool observations to the widget over the network.
+
+### Multi-host setup
+
+Multiple remote machines can report to a single Quill app. Install the plugin on each remote machine and point them to the same widget IP during setup. Each machine's hostname appears in the widget for filtering.
 
 ### Using the learning panel
 
-Once the plugin is installed and observations are being collected:
+Once observations are being collected (either via local auto-setup or remote plugin):
 
 1. Click the **✦ button** in the titlebar to open the learning panel
 2. Toggle learning **ON** with the switch in the panel header
@@ -286,24 +315,8 @@ Once the plugin is installed and observations are being collected:
 You can also trigger analysis from Claude Code by running the learn skill:
 
 ```
-/quill-hook:learn
+/quill:learn
 ```
-
-### Manual install (alternative)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sharaf-nassar/quill/main/hooks/install.sh | bash
-```
-
-With a remote widget host:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sharaf-nassar/quill/main/hooks/install.sh | bash -s -- --url http://<widget-ip>:19876 --hostname my-server
-```
-
-### Multi-host setup
-
-Multiple machines can report to a single widget. Install the plugin on each machine and point them to the same widget IP during setup. Each machine's hostname appears in the widget for filtering.
 
 ### Verify
 
@@ -387,6 +400,7 @@ src-tauri/                    # Rust backend
     lib.rs                    # IPC commands, tray icon, updater, server startup
     ai_client.rs              # Rig Anthropic integration for learning analysis
     auth.rs                   # OAuth token management
+    claude_setup.rs           # Auto-configures Claude Code on app startup (hooks, MCP, config)
     config.rs                 # Credential loading (read-only)
     fetcher.rs                # Usage API calls
     learning.rs               # Learning analysis spawner
@@ -396,8 +410,13 @@ src-tauri/                    # Rust backend
     sessions.rs               # Tantivy full-text session search and indexing
     storage.rs                # SQLite storage with aggregation
     server.rs                 # axum HTTP server for token reporting
+  claude-integration/         # Resources bundled into the app for local Claude Code setup
+    scripts/                  # Hook scripts deployed to ~/.config/quill/scripts/
+    mcp/                      # MCP server deployed to ~/.config/quill/mcp/
+    templates/                # CLAUDE.md section template
+    commands/                 # Slash commands deployed to ~/.claude/commands/
   tauri.conf.json             # Tauri window and build configuration
-plugin/                       # Claude Code plugin (hook + setup/learn skills)
+plugin/                       # Claude Code plugin (for remote host setups only)
   .claude-plugin/
     plugin.json               # Plugin manifest
   hooks/
@@ -409,7 +428,7 @@ plugin/                       # Claude Code plugin (hook + setup/learn skills)
     session-end-learn.js      # Triggers learning analysis on session end
   skills/
     setup/
-      SKILL.md                # Interactive setup wizard
+      SKILL.md                # Interactive setup wizard (remote host configuration)
     learn/
       SKILL.md                # Manual learning analysis trigger
     build/
@@ -426,9 +445,6 @@ plugin/                       # Claude Code plugin (hook + setup/learn skills)
       discovery.py            # list_projects, list_sessions, get_session_overview
       analytics.py            # get_token_usage, get_learned_rules
       details.py              # get_tool_details
-hooks/                        # Standalone hook scripts (non-plugin)
-  quill-hook.sh               # Standalone Stop hook
-  install.sh                  # curl-pipe installer
 ```
 
 ## Releasing

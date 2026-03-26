@@ -16,10 +16,9 @@ Delegate ALL implementation to agents using the Agent tool. Your job is orchestr
 
 ## When NOT to Use
 
-- Single-file changes or simple bug fixes — implement directly
-- Config tweaks, typos, or documentation edits — too much overhead
-- Tasks completable in fewer than 3 tool calls — just do it
-- Exploratory questions or research — use Explore agents instead
+- Pure knowledge questions with no code changes intended (e.g. "how does X work?", "explain this function") — use Explore agents directly instead
+
+**Every task that produces code changes MUST use the full worktree workflow — no exceptions, regardless of task size.** The worktree is a safety mechanism, not overhead. Codebase exploration as part of planning a change is expected and happens in Phase 1.
 
 ---
 
@@ -164,7 +163,7 @@ If changes requested, update and re-present. If the user prefers a different arc
 
 ### Pre-flight Checks
 
-1. **Uncommitted changes**: Run `git status --porcelain`. If output, **STOP** — ask user to commit or stash.
+1. **Uncommitted changes**: Run `git status --porcelain`. If output, **STOP** — present the dirty files to the user and ask how they want to handle them. **NEVER run `git stash` automatically.** Do not proceed until the working tree is clean.
 2. **Stale qbuild artifacts**: Run `git worktree list` and `git branch --list 'qbuild/*'`. If any exist, present to user — clean up or use different slug.
 3. **Stale lock files**: Run `ls .qbuild-lock.* 2>/dev/null`. If any exist, present to user — they may be leftover from a crashed session. Offer to remove them.
 
@@ -599,7 +598,7 @@ Used in Phase 7 for multi-focus quality review. Launch 3 instances with differen
 
 ## Coordinator Rules
 
-1. ⛔ **Worktree discipline (NON-NEGOTIABLE)** — Phase 5 MUST complete before Phase 6. All agent prompts MUST include WORKTREE_PATH. Never modify original project directory. If worktree creation fails, STOP and report — do NOT fall back to working in the original directory.
+1. ⛔ **Worktree discipline (NON-NEGOTIABLE)** — Phase 5 MUST complete before Phase 6. All agent prompts MUST include WORKTREE_PATH. Never modify original project directory. If worktree creation fails, STOP and report — do NOT fall back to working in the original directory. **Every qbuild invocation MUST create a worktree — no exceptions, regardless of task size.**
 2. **Never edit code yourself** — Implementors implement, Fix Agents fix.
 3. **Never skip clarification** — Phase 2 catches ambiguities that compound into costly rework. Skip only when the request is genuinely unambiguous.
 4. **Never skip verification** — every wave + final holistic check.
@@ -621,5 +620,7 @@ Used in Phase 7 for multi-focus quality review. Launch 3 instances with differen
 20. **User checkpoints** — Phase 2 (clarification), Phase 4 (plan approval), Phase 7 (review findings), architectural escalation. Never skip these without user input.
 21. **Root cause before fixes** — Fix Agents must investigate before fixing. If a Fix Agent's report lacks root cause evidence, SendMessage asking for investigation before accepting fixes.
 22. **Escalate architectural failures** — when Fix Agent reports that fixes reveal problems in different places or create new symptoms, present the investigation report to the user with redesign/continue/abort options. Do not silently continue.
+23. ⛔ **Never stash (NON-NEGOTIABLE)** — NEVER run `git stash` automatically. If the working tree is dirty, STOP and present the dirty files to the user. Ask them how to proceed. Do not offer to stash on their behalf.
+24. **Stop on dirty git errors** — if any git operation fails due to uncommitted changes, unstaged files, or other dirty-state issues, STOP immediately and ask the user. Do not attempt to resolve dirty-git errors automatically.
 
 ARGUMENTS: $ARGUMENTS

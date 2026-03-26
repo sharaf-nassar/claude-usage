@@ -1,5 +1,5 @@
 ---
-description: Configure the Quill widget connection. Run this after installing the plugin to set the widget IP address and bearer secret.
+description: Configure the Quill plugin for a remote host. Run this when Claude Code runs on a different machine than the Quill app.
 ---
 
-Invoke the quill-hook:setup skill and follow it exactly as presented to you
+Invoke the quill:setup skill and follow it exactly as presented to you

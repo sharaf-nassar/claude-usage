@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reports token usage from the last assistant turn to the Quill widget.
-# Runs as a Claude Code Stop hook via the quill-hook plugin.
+# Runs as a Claude Code Stop hook via the quill app-bundled hooks.
 
 set -euo pipefail
 
