@@ -17,7 +17,7 @@ def get_config() -> dict:
     config_path = Path.home() / ".config/quill/config.json"
     if not config_path.exists():
         raise RuntimeError(
-            "Quill config not found. Run /quill-hook:setup to configure the connection."
+            "Quill config not found. Run /quill:setup to configure the connection."
         )
     with open(config_path) as f:
         return json.load(f)

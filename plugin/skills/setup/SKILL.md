@@ -1,14 +1,18 @@
 ---
 name: setup
-description: Configure the Quill widget connection and MCP server. Run this after installing the plugin to set the widget IP address and bearer secret.
+description: Configure the Quill plugin for a remote host. Run this when Claude Code runs on a different machine than the Quill app.
 ---
 
-You are configuring the Quill plugin. This plugin has two components:
+You are configuring the Quill plugin for a **remote host setup** — where Claude Code runs on a different machine than the Quill desktop app.
+
+> **Note**: If the Quill app runs on the same machine as Claude Code, you don't need this plugin or this setup. The app automatically configures hooks, MCP, and config on startup. This setup is for remote connections only.
+
+This plugin has two components:
 
 1. **Usage hook** — reports per-turn token usage to the Quill desktop widget over HTTP
 2. **MCP server** — lets you query session history, search past conversations, and analyze usage patterns
 
-The widget server requires a bearer secret for authentication. The secret is stored at `~/Library/Application Support/com.quilltoolkit.app/auth_secret` on macOS or `~/.local/share/com.quilltoolkit.app/auth_secret` on Linux.
+The widget server requires a bearer secret for authentication. The secret is stored at `~/Library/Application Support/com.quilltoolkit.app/auth_secret` on macOS or `~/.local/share/com.quilltoolkit.app/auth_secret` on Linux, on the machine running the Quill app.
 
 Follow these steps exactly:
 
@@ -24,8 +28,8 @@ Follow these steps exactly:
    - Set the URL to `http://localhost:19876`.
    - Read the secret from `~/Library/Application Support/com.quilltoolkit.app/auth_secret` (macOS) or `~/.local/share/com.quilltoolkit.app/auth_secret` (Linux) using the Read tool.
    - If the secret file exists, display it to the user and tell them:
-     "Save this secret — you'll need it when running `/quill-hook:setup` on any other machine that should report to this widget."
-   - If the secret file doesn't exist, warn the user that the widget doesn't appear to have been launched yet. The config will be saved and will work once the widget creates the secret on first launch. They can re-run `/quill-hook:setup` afterward.
+     "Save this secret — you'll need it when running `/quill:setup` on any other machine that should report to this widget."
+   - If the secret file doesn't exist, warn the user that the widget doesn't appear to have been launched yet. The config will be saved and will work once the widget creates the secret on first launch. They can re-run `/quill:setup` afterward.
 
 3. If they choose "Another machine on my network":
    - Use AskUserQuestion to ask:
@@ -34,7 +38,7 @@ Follow these steps exactly:
    - Construct the URL as `http://<their-input>:19876`
    - Use AskUserQuestion to ask:
      "What is the bearer secret from the widget machine? (On macOS run `cat ~/Library/Application\\ Support/com.quilltoolkit.app/auth_secret`, on Linux run `cat ~/.local/share/com.quilltoolkit.app/auth_secret`)"
-     Provide a single option "I don't have it yet" with description "Skip for now — the hook will fail until a valid secret is configured. Re-run /quill-hook:setup when you have it."
+     Provide a single option "I don't have it yet" with description "Skip for now — the hook will fail until a valid secret is configured. Re-run /quill:setup when you have it."
    - If they provide a secret, use it. If they choose "I don't have it yet", set secret to empty string and warn them.
 
 4. Then ask for an optional hostname label:
@@ -60,7 +64,7 @@ Follow these steps exactly:
      `curl -s -m 3 -X POST -H 'Content-Type: application/json' -H 'Authorization: Bearer <secret>' -d '{"session_id":"setup-test","hostname":"setup-test","input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}' <url>/api/v1/tokens`
    - If both succeed, tell the user the hook is connected and will report token usage after each turn.
    - If the health check fails, warn the user that the widget doesn't seem reachable at that address, but the config has been saved and will work once the widget is running.
-   - If the health check passes but the auth test fails, warn the user that the secret may be incorrect. They can re-run `/quill-hook:setup` to fix it.
+   - If the health check passes but the auth test fails, warn the user that the secret may be incorrect. They can re-run `/quill:setup` to fix it.
 
 ## Part 2: MCP Server Verification
 
@@ -68,13 +72,13 @@ Follow these steps exactly:
    - Run: `uv --version`
    - If `uv` is not found, tell the user:
      "The Quill MCP server requires `uv` (Python package manager). Install it with: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-     Then re-run `/quill-hook:setup`."
+     Then re-run `/quill:setup`."
    - If `uv` is found, proceed to step 8.
 
 8. Verify the MCP server can start:
    - Run: `uv run --directory ${CLAUDE_PLUGIN_ROOT}/mcp python -c "from server import mcp; print('ok')"`
    - If it succeeds, tell the user: "The Quill MCP server is ready. It provides 12 tools for querying your session history, searching past conversations, and analyzing usage patterns. The MCP server starts automatically — no additional configuration needed."
-   - If it fails, show the error and suggest: "Try running `uv sync --directory ${CLAUDE_PLUGIN_ROOT}/mcp` to install dependencies, then re-run `/quill-hook:setup`."
+   - If it fails, show the error and suggest: "Try running `uv sync --directory ${CLAUDE_PLUGIN_ROOT}/mcp` to install dependencies, then re-run `/quill:setup`."
 
 ## Part 3: CLAUDE.md MCP Instructions
 
@@ -93,18 +97,18 @@ Follow these steps exactly:
      content, code changes, commands run, and tool usage.
 
    - **MCP Tools** (use these directly):
-     - `mcp__plugin_quill-hook_quill__list_projects` — List all projects with session counts
-     - `mcp__plugin_quill-hook_quill__list_sessions` — List sessions with metadata (filter by project, date)
-     - `mcp__plugin_quill-hook_quill__get_session_overview` — Preview a session (first message, tools, files)
-     - `mcp__plugin_quill-hook_quill__search_history` — Full-text search across all session history
-     - `mcp__plugin_quill-hook_quill__get_session_context` — Get surrounding messages around a search hit
-     - `mcp__plugin_quill-hook_quill__get_file_history` — All tool actions on a file across sessions
-     - `mcp__plugin_quill-hook_quill__get_branch_activity` — Work done on a specific git branch
-     - `mcp__plugin_quill-hook_quill__find_related_sessions` — Sessions that share files with a given session
-     - `mcp__plugin_quill-hook_quill__get_token_usage` — Token usage analytics by period (1h/24h/7d/30d)
-     - `mcp__plugin_quill-hook_quill__get_learned_rules` — Learned behavioral rules from past sessions
-     - `mcp__plugin_quill-hook_quill__get_tool_details` — Full tool input/output for a specific message
-     - `mcp__plugin_quill-hook_quill__get_index_status` — Index and database health stats
+     - `mcp__quill__list_projects` — List all projects with session counts
+     - `mcp__quill__list_sessions` — List sessions with metadata (filter by project, date)
+     - `mcp__quill__get_session_overview` — Preview a session (first message, tools, files)
+     - `mcp__quill__search_history` — Full-text search across all session history
+     - `mcp__quill__get_session_context` — Get surrounding messages around a search hit
+     - `mcp__quill__get_file_history` — All tool actions on a file across sessions
+     - `mcp__quill__get_branch_activity` — Work done on a specific git branch
+     - `mcp__quill__find_related_sessions` — Sessions that share files with a given session
+     - `mcp__quill__get_token_usage` — Token usage analytics by period (1h/24h/7d/30d)
+     - `mcp__quill__get_learned_rules` — Learned behavioral rules from past sessions
+     - `mcp__quill__get_tool_details` — Full tool input/output for a specific message
+     - `mcp__quill__get_index_status` — Index and database health stats
 
    - **Workflow**: Use progressive disclosure — browse (`list_projects`/`list_sessions`) → search
      (`search_history`) → cross-reference (`get_file_history`/`get_branch_activity`) → drill down

@@ -176,8 +176,16 @@ jobs:
           fi
           echo "Found release ID: ${RELEASE_ID}"
 
-          # Rename assets: insert platform between version and arch (skip already-renamed)
-          gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --jq '.[] | "\(.id)\t\(.name)"' | while IFS=$'\t' read -r id name; do
+          # Build lookup of existing asset names -> IDs for conflict detection
+          declare -A EXISTING_ASSETS
+          while IFS=$'\t' read -r id name; do
+            EXISTING_ASSETS["$name"]="$id"
+          done < <(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --jq '.[] | "\(.id)\t\(.name)"')
+
+          # Rename assets: insert platform between version and arch
+          for name in "${!EXISTING_ASSETS[@]}"; do
+            id="${EXISTING_ASSETS[$name]}"
+
             # Skip files that already have a platform label
             if [[ "$name" =~ _(linux|macOS|windows)_ ]]; then
               continue
@@ -194,8 +202,14 @@ jobs:
             fi
 
             if [[ "$new_name" != "$name" ]]; then
-              echo "Renaming: $name -> $new_name"
-              gh api --method PATCH "repos/${GH_REPO}/releases/assets/${id}" -f name="$new_name"
+              # If a platform-labeled asset already exists (from a prior run), delete the unlabeled duplicate
+              if [[ -n "${EXISTING_ASSETS[$new_name]:-}" ]]; then
+                echo "Deleting duplicate: $name (platform-labeled version already exists)"
+                gh api --method DELETE "repos/${GH_REPO}/releases/assets/${id}"
+              else
+                echo "Renaming: $name -> $new_name"
+                gh api --method PATCH "repos/${GH_REPO}/releases/assets/${id}" -f name="$new_name"
+              fi
             fi
           done
 

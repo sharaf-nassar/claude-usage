@@ -494,11 +494,16 @@ fn register_hooks() -> Result<(), String> {
         ),
     ];
 
-    // First pass: remove ALL existing entries with our marker across all events.
-    // This handles the case where a future version removes a hook type entirely.
+    // First pass: remove ALL existing Quill entries across all events.
+    // Matches both marked entries (_source: "quill-setup") AND unmarked legacy entries
+    // that reference our scripts directory (from before the marker was introduced).
+    let quill_scripts_path = sd_str.to_string();
     for (_event, entries) in hooks_obj.iter_mut() {
         if let Some(arr) = entries.as_array_mut() {
-            arr.retain(|entry| !entry.to_string().contains(HOOK_MARKER));
+            arr.retain(|entry| {
+                let s = entry.to_string();
+                !s.contains(HOOK_MARKER) && !s.contains(&quill_scripts_path)
+            });
         }
     }
 
