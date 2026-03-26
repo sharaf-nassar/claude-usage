@@ -300,20 +300,20 @@ export function useMemoryData() {
   );
 
   const deleteMemoryFile = useCallback(
-    async (filePath: string) => {
-      const proj = selectedProjectRef.current;
+    async (filePath: string, projectPath?: string) => {
+      const proj = projectPath ?? selectedProjectRef.current;
       if (!proj) return;
       try {
         await invoke("delete_memory_file", {
           projectPath: proj,
           filePath,
         });
-        await Promise.all([loadProjects(), loadProjectData(proj)]);
+        await Promise.all([loadProjects(), refresh()]);
       } catch (e) {
         toast("error", `Failed to delete memory: ${e}`);
       }
     },
-    [loadProjects, loadProjectData, toast],
+    [loadProjects, refresh, toast],
   );
 
   const deleteProjectMemories = useCallback(

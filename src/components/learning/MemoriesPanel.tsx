@@ -251,7 +251,7 @@ export function MemoriesPanel() {
   const [showHistory, setShowHistory] = useState(false);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState<
-    { type: "file"; path: string; name: string } | { type: "project"; path: string } | null
+    { type: "file"; path: string; name: string; projectPath?: string } | { type: "project"; path: string } | null
   >(null);
   const [showEmpty, setShowEmpty] = useState(false);
 
@@ -466,13 +466,37 @@ export function MemoriesPanel() {
                       expanded={expandedFiles.has(mf.file_path)}
                       onToggle={toggleFile}
                       onDelete={(path, name) =>
-                        setConfirmDelete({ type: "file", path, name })
+                        setConfirmDelete({ type: "file", path, name, projectPath: mf.project_path })
                       }
                     />
                   ))}
                 </div>
               ));
             })()
+          )}
+          {confirmDelete?.type === "file" && (
+            <div style={STYLES.fileConfirmBar}>
+              <span style={STYLES.fileConfirmLabel}>
+                Delete {confirmDelete.name}?
+              </span>
+              <button
+                className="learning-analyze-btn"
+                style={STYLES.deleteConfirmBtn}
+                onClick={() => {
+                  deleteMemoryFile(confirmDelete.path, confirmDelete.projectPath);
+                  setConfirmDelete(null);
+                }}
+              >
+                Delete
+              </button>
+              <button
+                className="learning-rule-delete"
+                style={STYLES.cancelBtn}
+                onClick={() => setConfirmDelete(null)}
+              >
+                Cancel
+              </button>
+            </div>
           )}
         </>
       ) : (
@@ -494,7 +518,7 @@ export function MemoriesPanel() {
                   className="learning-analyze-btn"
                   style={STYLES.deleteConfirmBtn}
                   onClick={() => {
-                    deleteMemoryFile(confirmDelete.path);
+                    deleteMemoryFile(confirmDelete.path, confirmDelete.projectPath);
                     setConfirmDelete(null);
                   }}
                 >
